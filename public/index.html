@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenTop Bus Tracker</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+        }
+        
+        .header {
+            background-color: #2c3e50;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            margin-bottom: 10px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        
+        .info-panel {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .info-panel h2 {
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+        
+        #map {
+            height: 600px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        
+        .bus-info {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 10px;
+        }
+        
+        .bus-card {
+            background: #ecf0f1;
+            padding: 10px;
+            border-radius: 5px;
+            min-width: 200px;
+        }
+        
+        .bus-card h3 {
+            margin-bottom: 5px;
+            color: #34495e;
+        }
+        
+        .bus-card p {
+            margin: 3px 0;
+            font-size: 14px;
+        }
+        
+        .embed-info {
+            background: #e8f5e9;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        
+        .embed-info code {
+            background: #c8e6c9;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .status.active {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .status.inactive {
+            background: #f44336;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚌 OpenTop Bus Tracker</h1>
+        <p>Real-time tracking of tour buses using OwnTracks</p>
+    </div>
+    
+    <div class="container">
+        <div class="info-panel">
+            <h2>Live Bus Locations</h2>
+            <div id="busInfo" class="bus-info">
+                <p>Waiting for bus location data...</p>
+            </div>
+        </div>
+        
+        <div id="map"></div>
+        
+        <div class="embed-info">
+            <h3>Embed this map on your website:</h3>
+            <p>Use this iframe code:</p>
+            <code>&lt;iframe src="<span id="embedUrl"></span>" width="800" height="600" frameborder="0"&gt;&lt;/iframe&gt;</code>
+        </div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([51.505, -0.09], 13);
+        
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        
+        // Store markers and routes
+        const busMarkers = {};
+        let routeLayer = null;
+        
+        // Custom bus icon
+        const busIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+                    <circle cx="12" cy="12" r="11" fill="#FF5722" stroke="white" stroke-width="2"/>
+                    <text x="12" y="17" font-size="16" text-anchor="middle" fill="white">🚌</text>
+                </svg>
+            `),
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+            popupAnchor: [0, -20]
+        });
+        
+        // Load and display routes
+        async function loadRoutes() {
+            try {
+                const response = await fetch('/api/routes');
+                const routes = await response.json();
+                
+                if (routeLayer) {
+                    map.removeLayer(routeLayer);
+                }
+                
+                routes.forEach(route => {
+                    routeLayer = L.polyline(route.coordinates, {
+                        color: '#3388ff',
+                        weight: 4,
+                        opacity: 0.6
+                    }).addTo(map);
+                    
+                    routeLayer.bindPopup(`<b>${route.name}</b>`);
+                });
+            } catch (error) {
+                console.error('Error loading routes:', error);
+            }
+        }
+        
+        // Update bus locations
+        async function updateBusLocations() {
+            try {
+                const response = await fetch('/api/locations');
+                const locations = await response.json();
+                
+                const busInfoDiv = document.getElementById('busInfo');
+                busInfoDiv.innerHTML = '';
+                
+                if (Object.keys(locations).length === 0) {
+                    busInfoDiv.innerHTML = '<p>No bus location data available yet. Send data from OwnTracks to get started.</p>';
+                    return;
+                }
+                
+                Object.entries(locations).forEach(([deviceId, location]) => {
+                    const { lat, lon, timestamp, battery, accuracy, velocity } = location;
+                    
+                    // Update or create marker
+                    if (busMarkers[deviceId]) {
+                        busMarkers[deviceId].setLatLng([lat, lon]);
+                    } else {
+                        busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon })
+                            .addTo(map)
+                            .bindPopup(`<b>Bus ${deviceId}</b>`);
+                        
+                        // Center map on first bus
+                        map.setView([lat, lon], 13);
+                    }
+                    
+                    // Update popup
+                    const age = Math.floor(Date.now() / 1000 - timestamp);
+                    const isActive = age < 300; // Active if updated in last 5 minutes
+                    
+                    busMarkers[deviceId].setPopupContent(`
+                        <b>Bus ${deviceId}</b><br>
+                        Status: <span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span><br>
+                        Battery: ${battery || 'N/A'}%<br>
+                        Speed: ${velocity ? (velocity * 3.6).toFixed(1) : 'N/A'} km/h<br>
+                        Updated: ${age}s ago
+                    `);
+                    
+                    // Add info card
+                    const card = document.createElement('div');
+                    card.className = 'bus-card';
+                    card.innerHTML = `
+                        <h3>Bus ${deviceId}</h3>
+                        <p><span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span></p>
+                        <p>Battery: ${battery || 'N/A'}%</p>
+                        <p>Speed: ${velocity ? (velocity * 3.6).toFixed(1) : 'N/A'} km/h</p>
+                        <p>Accuracy: ±${accuracy || 'N/A'}m</p>
+                        <p>Updated: ${age}s ago</p>
+                    `;
+                    busInfoDiv.appendChild(card);
+                });
+            } catch (error) {
+                console.error('Error updating bus locations:', error);
+            }
+        }
+        
+        // Set embed URL
+        document.getElementById('embedUrl').textContent = window.location.origin + '/embed';
+        
+        // Initial load
+        loadRoutes();
+        updateBusLocations();
+        
+        // Update every 5 seconds
+        setInterval(updateBusLocations, 5000);
+    </script>
+</body>
+</html>
