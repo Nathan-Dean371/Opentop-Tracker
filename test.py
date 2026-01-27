@@ -53,7 +53,7 @@ def test_single_bus():
     """Test tracking a single bus"""
     print("Test 1: Single bus tracking")
     result = send_location("test-bus", 51.505, -0.09, 85, 15)
-    assert result['success'] == True
+    assert result['success']
     
     locations = get_locations()
     assert 'test-bus' in locations

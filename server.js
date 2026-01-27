@@ -24,7 +24,7 @@ app.post('/owntracks', (req, res) => {
     busLocations[deviceId] = {
       lat: data.lat,
       lon: data.lon,
-      timestamp: data.tst || Date.now() / 1000,
+      timestamp: data.tst || Math.floor(Date.now() / 1000),
       battery: data.batt,
       accuracy: data.acc,
       velocity: data.vel,
