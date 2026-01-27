@@ -9,6 +9,8 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+// Serve Leaflet from node_modules
+app.use('/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
 
 // In-memory storage for bus locations
 let busLocations = {};

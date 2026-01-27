@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenTop Bus Tracker</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/leaflet/leaflet.css" />
     <style>
         * {
             margin: 0;
@@ -133,7 +133,7 @@
         </div>
     </div>
     
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/leaflet/leaflet.js"></script>
     <script>
         // Initialize map
         const map = L.map('map').setView([51.505, -0.09], 13);
@@ -147,12 +147,16 @@
         const busMarkers = {};
         let routeLayer = null;
         
-        // Custom bus icon
+        // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)
         const busIcon = L.icon({
-            iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+            iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
                     <circle cx="12" cy="12" r="11" fill="#FF5722" stroke="white" stroke-width="2"/>
-                    <text x="12" y="17" font-size="16" text-anchor="middle" fill="white">🚌</text>
+                    <rect x="7" y="8" width="10" height="8" rx="1" fill="white"/>
+                    <rect x="8" y="9" width="3" height="3" fill="#FF5722"/>
+                    <rect x="13" y="9" width="3" height="3" fill="#FF5722"/>
+                    <circle cx="9" cy="15" r="1" fill="#FF5722"/>
+                    <circle cx="15" cy="15" r="1" fill="#FF5722"/>
                 </svg>
             `),
             iconSize: [40, 40],
