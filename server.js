@@ -1,9 +1,14 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const multer = require('multer');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Configure multer for file uploads
+const upload = multer({ dest: 'uploads/' });
 
 // Middleware
 app.use(cors());
@@ -342,6 +347,206 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   
   return R * c; // Distance in meters
 }
+
+// Helper function to parse KML file (Google Maps exported routes)
+function parseKML(kmlContent) {
+  const routes = [];
+  const stops = [];
+  
+  // Extract LineStrings (routes/paths)
+  const lineStringRegex = /<Placemark>([\s\S]*?)<\/Placemark>/g;
+  let match;
+  
+  while ((match = lineStringRegex.exec(kmlContent)) !== null) {
+    const placemark = match[1];
+    
+    // Get name
+    const nameMatch = /<name><!\[CDATA\[(.*?)\]\]><\/name>|<name>(.*?)<\/name>/i.exec(placemark);
+    const name = nameMatch ? (nameMatch[1] || nameMatch[2]) : 'Unnamed';
+    
+    // Check for LineString (route)
+    const coordinatesMatch = /<LineString>([\s\S]*?)<coordinates>([\s\S]*?)<\/coordinates>([\s\S]*?)<\/LineString>/i.exec(placemark);
+    if (coordinatesMatch) {
+      const coordsText = coordinatesMatch[2].trim();
+      const coordinates = coordsText.split(/\s+/).map(coord => {
+        const [lon, lat, alt] = coord.split(',').map(Number);
+        return [lat, lon];
+      }).filter(coord => !isNaN(coord[0]) && !isNaN(coord[1]));
+      
+      if (coordinates.length > 0) {
+        routes.push({
+          name: name,
+          coordinates: coordinates,
+          waypoints: coordinates,
+          color: '#3388ff'
+        });
+      }
+    }
+    
+    // Check for Point (stop/placemark)
+    const pointMatch = /<Point>([\s\S]*?)<coordinates>([\s\S]*?)<\/coordinates>([\s\S]*?)<\/Point>/i.exec(placemark);
+    if (pointMatch) {
+      const coordsText = pointMatch[2].trim();
+      const [lon, lat, alt] = coordsText.split(',').map(Number);
+      
+      if (!isNaN(lat) && !isNaN(lon)) {
+        stops.push({
+          name: name,
+          lat: lat,
+          lon: lon,
+          order: stops.length
+        });
+      }
+    }
+  }
+  
+  return { routes, stops };
+}
+
+// Helper function to parse CSV file (Google Maps exported places)
+function parseCSV(csvContent) {
+  const lines = csvContent.split('\n');
+  const stops = [];
+  
+  // Try to find header row
+  let headerIndex = -1;
+  let headers = [];
+  
+  for (let i = 0; i < Math.min(5, lines.length); i++) {
+    const line = lines[i].toLowerCase();
+    if (line.includes('latitude') && line.includes('longitude')) {
+      headerIndex = i;
+      headers = lines[i].split(',').map(h => h.trim().replace(/"/g, ''));
+      break;
+    }
+  }
+  
+  if (headerIndex === -1) {
+    // Try without header - assume format: name, lat, lon
+    for (let i = 0; i < lines.length; i++) {
+      const parts = lines[i].split(',');
+      if (parts.length >= 3) {
+        const lat = parseFloat(parts[1]);
+        const lon = parseFloat(parts[2]);
+        if (!isNaN(lat) && !isNaN(lon)) {
+          stops.push({
+            name: parts[0].replace(/"/g, '').trim() || `Stop ${i + 1}`,
+            lat: lat,
+            lon: lon,
+            order: stops.length
+          });
+        }
+      }
+    }
+  } else {
+    // Parse with headers
+    const nameIdx = headers.findIndex(h => h.toLowerCase().includes('name') || h.toLowerCase().includes('title'));
+    const latIdx = headers.findIndex(h => h.toLowerCase().includes('latitude') || h.toLowerCase() === 'lat');
+    const lonIdx = headers.findIndex(h => h.toLowerCase().includes('longitude') || h.toLowerCase() === 'lon' || h.toLowerCase() === 'lng');
+    
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      
+      const parts = lines[i].split(',');
+      const lat = parseFloat(parts[latIdx]);
+      const lon = parseFloat(parts[lonIdx]);
+      
+      if (!isNaN(lat) && !isNaN(lon)) {
+        stops.push({
+          name: (nameIdx >= 0 ? parts[nameIdx] : `Stop ${stops.length + 1}`).replace(/"/g, '').trim(),
+          lat: lat,
+          lon: lon,
+          order: stops.length
+        });
+      }
+    }
+  }
+  
+  return { stops };
+}
+
+// Import routes/stops from Google Maps export (KML or CSV)
+app.post('/api/import/google-maps', upload.single('file'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+  
+  try {
+    const fileContent = fs.readFileSync(req.file.path, 'utf8');
+    const fileName = req.file.originalname.toLowerCase();
+    
+    let result = { routes: [], stops: [] };
+    
+    if (fileName.endsWith('.kml')) {
+      result = parseKML(fileContent);
+    } else if (fileName.endsWith('.csv')) {
+      result = parseCSV(fileContent);
+    } else {
+      // Try to auto-detect
+      if (fileContent.includes('<?xml') || fileContent.includes('<kml')) {
+        result = parseKML(fileContent);
+      } else {
+        result = parseCSV(fileContent);
+      }
+    }
+    
+    // Add imported routes to the system
+    const addedRoutes = [];
+    if (result.routes) {
+      result.routes.forEach(route => {
+        const newRoute = {
+          id: `route-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          name: route.name,
+          coordinates: route.coordinates,
+          waypoints: route.waypoints,
+          color: route.color,
+          createdAt: new Date().toISOString()
+        };
+        routes.push(newRoute);
+        addedRoutes.push(newRoute);
+      });
+    }
+    
+    // Add imported stops to the system
+    const addedStops = [];
+    if (result.stops) {
+      result.stops.forEach(stop => {
+        const newStop = {
+          id: `stop-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          name: stop.name,
+          lat: stop.lat,
+          lon: stop.lon,
+          routeId: stop.routeId || null,
+          order: stop.order,
+          createdAt: new Date().toISOString()
+        };
+        stops.push(newStop);
+        addedStops.push(newStop);
+      });
+    }
+    
+    // Clean up uploaded file
+    fs.unlinkSync(req.file.path);
+    
+    res.json({
+      success: true,
+      routes: addedRoutes,
+      stops: addedStops,
+      message: `Imported ${addedRoutes.length} route(s) and ${addedStops.length} stop(s)`
+    });
+    
+  } catch (error) {
+    // Clean up uploaded file on error
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {}
+    }
+    
+    console.error('Error parsing file:', error);
+    res.status(500).json({ error: 'Failed to parse file: ' + error.message });
+  }
+});
 
 // Serve the map page
 app.get('/', (req, res) => {

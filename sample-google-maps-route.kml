@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Galway City Tour</name>
+    <Placemark>
+      <name><![CDATA[City Centre Route]]></name>
+      <LineString>
+        <coordinates>
+-9.0568,53.2707,0
+-9.0520,53.2720,0
+-9.0480,53.2740,0
+-9.0510,53.2760,0
+-9.0568,53.2707,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name><![CDATA[Eyre Square]]></name>
+      <Point>
+        <coordinates>-9.0489,53.2743,0</coordinates>
+      </Point>
+    </Placemark>
+    <Placemark>
+      <name><![CDATA[Spanish Arch]]></name>
+      <Point>
+        <coordinates>-9.0540,53.2698,0</coordinates>
+      </Point>
+    </Placemark>
+    <Placemark>
+      <name><![CDATA[Galway Cathedral]]></name>
+      <Point>
+        <coordinates>-9.0593,53.2745,0</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>

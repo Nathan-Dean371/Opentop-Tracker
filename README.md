@@ -11,7 +11,8 @@ A real-time bus tracking web application that receives location data from OwnTra
 - 🔗 Embeddable map for websites
 - 🛣️ Route creation and visualization with **automatic road-following**
 - 🛑 Stop management with ordering
-- 🔄 Bus-to-route assignments
+- � **Import routes and stops from Google Maps** (KML/CSV)
+- �🔄 Bus-to-route assignments
 - 📊 Tracker-to-bus assignments
 - ⏱️ ETA (Estimated Time of Arrival) to next stop
 - 🔋 Battery and speed monitoring
@@ -123,6 +124,29 @@ Update an existing route.
 
 #### DELETE `/api/routes/:id`
 Delete a route.
+
+### Import
+
+#### POST `/api/import/google-maps`
+Import routes and stops from Google Maps KML or CSV files.
+
+**Request**: Multipart form data with `file` field
+
+**Supported Formats**:
+- KML files from Google My Maps (routes and stops)
+- CSV files with columns: Name, Latitude, Longitude
+
+**Response**:
+```json
+{
+  "success": true,
+  "routes": [...],
+  "stops": [...],
+  "message": "Imported 1 route(s) and 3 stop(s)"
+}
+```
+
+See [GOOGLE-MAPS-IMPORT.md](GOOGLE-MAPS-IMPORT.md) for detailed documentation.
 
 ### Stops Management
 
@@ -262,6 +286,12 @@ The admin panel at `/admin` provides a user-friendly interface for managing your
 4. Click "Add Route" to save
 5. View and delete existing routes in the table below
 
+**Or import from Google Maps:**
+1. Export your route as KML from Google My Maps
+2. Click "Choose File" in the Import section
+3. Select your KML file and click "Import Routes/Stops"
+4. See [GOOGLE-MAPS-IMPORT.md](GOOGLE-MAPS-IMPORT.md) for detailed instructions
+
 ### Managing Stops
 
 1. Navigate to the **Stops** tab
@@ -270,6 +300,12 @@ The admin panel at `/admin` provides a user-friendly interface for managing your
 4. Set the stop order (determines sequence along route)
 5. Click "Add Stop" to save
 6. View and delete existing stops in the table below
+
+**Or import from Google Maps:**
+1. Export your stops as KML or prepare a CSV file
+2. Click "Choose File" in the Import section
+3. Select your file and click "Import Stops"
+4. See [GOOGLE-MAPS-IMPORT.md](GOOGLE-MAPS-IMPORT.md) for detailed instructions
 
 ### Managing Buses
 

@@ -236,6 +236,12 @@
             border: 1px solid #f5c6cb;
         }
         
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
         .coordinate-builder {
             background: #e8f4f8;
             padding: 15px;
@@ -311,6 +317,23 @@
             </div>
             
             <div class="list-section">
+                <h3>Import from Google Maps</h3>
+                <div class="form-section" style="margin-bottom: 20px;">
+                    <p style="margin-bottom: 10px;">Upload a KML file exported from Google Maps (My Maps) containing routes or paths:</p>
+                    <form id="importRoutesForm" style="display: flex; gap: 10px; align-items: center;">
+                        <input type="file" id="routeFileInput" accept=".kml,.csv" required style="flex: 1;">
+                        <button type="submit" class="btn btn-primary">Import Routes/Stops</button>
+                    </form>
+                    <p style="margin-top: 10px; font-size: 12px; color: #666;">
+                        <strong>How to export from Google Maps:</strong><br>
+                        1. Go to <a href="https://www.google.com/mymaps" target="_blank">Google My Maps</a><br>
+                        2. Open your map with routes<br>
+                        3. Click the menu (⋮) next to the map title<br>
+                        4. Select "Export to KML/KMZ"<br>
+                        5. Choose "KML" (not KMZ) and download
+                    </p>
+                </div>
+                
                 <h3>Existing Routes</h3>
                 <table id="routesTable">
                     <thead>
@@ -366,6 +389,19 @@
             </div>
             
             <div class="list-section">
+                <h3>Import from Google Maps</h3>
+                <div class="form-section" style="margin-bottom: 20px;">
+                    <p style="margin-bottom: 10px;">Upload a KML or CSV file exported from Google Maps containing stops/placemarks:</p>
+                    <form id="importStopsForm" style="display: flex; gap: 10px; align-items: center;">
+                        <input type="file" id="stopFileInput" accept=".kml,.csv" required style="flex: 1;">
+                        <button type="submit" class="btn btn-primary">Import Stops</button>
+                    </form>
+                    <p style="margin-top: 10px; font-size: 12px; color: #666;">
+                        <strong>CSV Format:</strong> name, latitude, longitude<br>
+                        <strong>KML:</strong> Export from Google My Maps (points/placemarks will be imported as stops)
+                    </p>
+                </div>
+                
                 <h3>Existing Stops</h3>
                 <table id="stopsTable">
                     <thead>
@@ -723,6 +759,80 @@
                     loadAssignments();
                 } else {
                     showAlert('Error assigning bus to route', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        });
+        
+        // Import from Google Maps (Routes)
+        document.getElementById('importRoutesForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('routeFileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showAlert('Please select a file', 'error');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                showAlert('Importing... Please wait.', 'info');
+                const response = await fetch('/api/import/google-maps', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showAlert(result.message || 'Import successful!', 'success');
+                    fileInput.value = '';
+                    loadRoutes();
+                    loadStops();
+                } else {
+                    showAlert(result.error || 'Import failed', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        });
+        
+        // Import from Google Maps (Stops)
+        document.getElementById('importStopsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('stopFileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showAlert('Please select a file', 'error');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                showAlert('Importing... Please wait.', 'info');
+                const response = await fetch('/api/import/google-maps', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showAlert(result.message || 'Import successful!', 'success');
+                    fileInput.value = '';
+                    loadStops();
+                    loadRoutes();
+                } else {
+                    showAlert(result.error || 'Import failed', 'error');
                 }
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');
