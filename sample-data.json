@@ -1,0 +1,106 @@
+{
+  "routes": [
+    {
+      "name": "London City Tour",
+      "coordinates": [
+        [51.5074, -0.1278],
+        [51.5094, -0.1339],
+        [51.5145, -0.1408],
+        [51.5194, -0.1270],
+        [51.5155, -0.0922],
+        [51.5074, -0.1278]
+      ],
+      "color": "#FF5722"
+    },
+    {
+      "name": "River Thames Route",
+      "coordinates": [
+        [51.5033, -0.1195],
+        [51.5007, -0.1246],
+        [51.4995, -0.1376],
+        [51.5055, -0.1456],
+        [51.5095, -0.1376]
+      ],
+      "color": "#2196F3"
+    }
+  ],
+  "stops": [
+    {
+      "name": "Big Ben",
+      "lat": 51.5007,
+      "lon": -0.1246,
+      "routeId": "route1",
+      "order": 1
+    },
+    {
+      "name": "Westminster Abbey",
+      "lat": 51.4995,
+      "lon": -0.1376,
+      "routeId": "route1",
+      "order": 2
+    },
+    {
+      "name": "Buckingham Palace",
+      "lat": 51.5014,
+      "lon": -0.1419,
+      "routeId": "route1",
+      "order": 3
+    },
+    {
+      "name": "Trafalgar Square",
+      "lat": 51.5080,
+      "lon": -0.1281,
+      "routeId": "route1",
+      "order": 4
+    },
+    {
+      "name": "Tower Bridge",
+      "lat": 51.5055,
+      "lon": -0.0754,
+      "routeId": "route2",
+      "order": 1
+    },
+    {
+      "name": "Tower of London",
+      "lat": 51.5081,
+      "lon": -0.0759,
+      "routeId": "route2",
+      "order": 2
+    },
+    {
+      "name": "London Eye",
+      "lat": 51.5033,
+      "lon": -0.1195,
+      "routeId": "route2",
+      "order": 3
+    }
+  ],
+  "buses": [
+    {
+      "name": "Red Double Decker",
+      "number": "101",
+      "trackerId": "AB"
+    },
+    {
+      "name": "Blue Tour Bus",
+      "number": "102",
+      "trackerId": "CD"
+    },
+    {
+      "name": "Green Express",
+      "number": "103",
+      "trackerId": "EF"
+    }
+  ],
+  "assignments": {
+    "bus1": "route1",
+    "bus2": "route2"
+  },
+  "notes": [
+    "This is sample data for testing the OpenTop Tracker",
+    "After starting the server, use the admin panel to create these manually",
+    "Or modify server.js to load this data on startup",
+    "Remember: routeId in stops should match the actual route IDs created",
+    "Tracker IDs should match what you configure in OwnTracks app"
+  ]
+}

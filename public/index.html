@@ -108,12 +108,36 @@
             background: #f44336;
             color: white;
         }
+        
+        .nav {
+            background-color: #34495e;
+            padding: 10px 0;
+            text-align: center;
+        }
+        
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 10px 20px;
+            margin: 0 5px;
+            display: inline-block;
+        }
+        
+        .nav a:hover {
+            background-color: #2c3e50;
+        }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>🚌 OpenTop Bus Tracker</h1>
         <p>Real-time tracking of tour buses using OwnTracks</p>
+    </div>
+    
+    <div class="nav">
+        <a href="/">View Map</a>
+        <a href="/embed">Embed View</a>
+        <a href="/admin">Admin Panel</a>
     </div>
     
     <div class="container">
@@ -136,7 +160,7 @@
     <script src="/leaflet/leaflet.js"></script>
     <script>
         // Initialize map
-        const map = L.map('map').setView([51.505, -0.09], 13);
+        const map = L.map('map').setView([53.2707, -9.0568], 13);
         
         // Add OpenStreetMap tiles
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -146,6 +170,12 @@
         // Store markers and routes
         const busMarkers = {};
         let routeLayer = null;
+        let routeLayers = [];
+        let stopMarkers = [];
+        let buses = [];
+        let stops = [];
+        let routes = [];
+        let assignments = {};
         
         // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)
         const busIcon = L.icon({
@@ -164,28 +194,102 @@
             popupAnchor: [0, -20]
         });
         
+        // Custom stop icon
+        const stopIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="30" height="30">
+                    <circle cx="12" cy="12" r="10" fill="#4CAF50" stroke="white" stroke-width="2"/>
+                    <text x="12" y="17" font-size="16" font-weight="bold" fill="white" text-anchor="middle">S</text>
+                </svg>
+            `),
+            iconSize: [30, 30],
+            iconAnchor: [15, 15],
+            popupAnchor: [0, -15]
+        });
+        
         // Load and display routes
         async function loadRoutes() {
             try {
                 const response = await fetch('/api/routes');
-                const routes = await response.json();
+                routes = await response.json();
                 
-                if (routeLayer) {
-                    map.removeLayer(routeLayer);
-                }
+                // Clear existing route layers
+                routeLayers.forEach(layer => map.removeLayer(layer));
+                routeLayers = [];
                 
                 routes.forEach(route => {
-                    routeLayer = L.polyline(route.coordinates, {
-                        color: '#3388ff',
+                    const layer = L.polyline(route.coordinates, {
+                        color: route.color || '#3388ff',
                         weight: 4,
                         opacity: 0.6
                     }).addTo(map);
                     
-                    routeLayer.bindPopup(`<b>${route.name}</b>`);
+                    layer.bindPopup(`<b>${route.name}</b>`);
+                    routeLayers.push(layer);
                 });
             } catch (error) {
                 console.error('Error loading routes:', error);
             }
+        }
+        
+        // Load and display stops
+        async function loadStops() {
+            try {
+                const response = await fetch('/api/stops');
+                stops = await response.json();
+                
+                // Clear existing stop markers
+                stopMarkers.forEach(marker => map.removeLayer(marker));
+                stopMarkers = [];
+                
+                stops.forEach(stop => {
+                    const route = routes.find(r => r.id === stop.routeId);
+                    const marker = L.marker([stop.lat, stop.lon], { icon: stopIcon })
+                        .addTo(map)
+                        .bindPopup(`
+                            <b>${stop.name}</b><br>
+                            Route: ${route ? route.name : 'N/A'}<br>
+                            Stop #${stop.order}
+                        `);
+                    
+                    stopMarkers.push(marker);
+                });
+            } catch (error) {
+                console.error('Error loading stops:', error);
+            }
+        }
+        
+        // Load buses
+        async function loadBuses() {
+            try {
+                const response = await fetch('/api/buses');
+                buses = await response.json();
+            } catch (error) {
+                console.error('Error loading buses:', error);
+            }
+        }
+        
+        // Load assignments
+        async function loadAssignments() {
+            try {
+                const response = await fetch('/api/assignments');
+                assignments = await response.json();
+            } catch (error) {
+                console.error('Error loading assignments:', error);
+            }
+        }
+        
+        // Get ETA for a tracker
+        async function getETA(trackerId) {
+            try {
+                const response = await fetch(`/api/eta/${trackerId}`);
+                if (response.ok) {
+                    return await response.json();
+                }
+            } catch (error) {
+                console.error('Error getting ETA:', error);
+            }
+            return null;
         }
         
         // Update bus locations
@@ -202,8 +306,12 @@
                     return;
                 }
                 
-                Object.entries(locations).forEach(([deviceId, location]) => {
+                for (const [deviceId, location] of Object.entries(locations)) {
                     const { lat, lon, timestamp, battery, accuracy, velocity } = location;
+                    
+                    // Find bus info
+                    const bus = buses.find(b => b.trackerId === deviceId);
+                    const busName = bus ? `${bus.name} (${bus.number})` : `Bus ${deviceId}`;
                     
                     // Update or create marker
                     if (busMarkers[deviceId]) {
@@ -211,37 +319,70 @@
                     } else {
                         busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon })
                             .addTo(map)
-                            .bindPopup(`<b>Bus ${deviceId}</b>`);
+                            .bindPopup(`<b>${busName}</b>`);
                         
                         // Center map on first bus
                         map.setView([lat, lon], 13);
                     }
                     
+                    // Get ETA information
+                    const etaData = await getETA(deviceId);
+                    
                     // Update popup
                     const age = Math.floor(Date.now() / 1000 - timestamp);
                     const isActive = age < 300; // Active if updated in last 5 minutes
                     
-                    busMarkers[deviceId].setPopupContent(`
-                        <b>Bus ${deviceId}</b><br>
+                    let popupContent = `
+                        <b>${busName}</b><br>
                         Status: <span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span><br>
                         Battery: ${battery || 'N/A'}%<br>
                         Speed: ${velocity ? (velocity * 3.6).toFixed(1) : 'N/A'} km/h<br>
                         Updated: ${age}s ago
-                    `);
+                    `;
+                    
+                    if (etaData && etaData.nextStop) {
+                        const { nextStop } = etaData;
+                        popupContent += `<br><br><b>Next Stop:</b><br>`;
+                        popupContent += `${nextStop.name}<br>`;
+                        popupContent += `Distance: ${nextStop.distance}m<br>`;
+                        if (nextStop.eta !== null) {
+                            const etaMinutes = Math.floor(nextStop.eta / 60);
+                            const etaSeconds = nextStop.eta % 60;
+                            popupContent += `ETA: ${etaMinutes}m ${etaSeconds}s`;
+                        } else {
+                            popupContent += `ETA: Calculating...`;
+                        }
+                    }
+                    
+                    busMarkers[deviceId].setPopupContent(popupContent);
                     
                     // Add info card
                     const card = document.createElement('div');
                     card.className = 'bus-card';
-                    card.innerHTML = `
-                        <h3>Bus ${deviceId}</h3>
+                    let cardHTML = `
+                        <h3>${busName}</h3>
                         <p><span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span></p>
                         <p>Battery: ${battery || 'N/A'}%</p>
                         <p>Speed: ${velocity ? (velocity * 3.6).toFixed(1) : 'N/A'} km/h</p>
                         <p>Accuracy: ±${accuracy || 'N/A'}m</p>
                         <p>Updated: ${age}s ago</p>
                     `;
+                    
+                    if (etaData && etaData.nextStop) {
+                        const { nextStop } = etaData;
+                        cardHTML += `<hr style="margin: 8px 0;">`;
+                        cardHTML += `<p><b>Next Stop:</b> ${nextStop.name}</p>`;
+                        cardHTML += `<p>Distance: ${nextStop.distance}m</p>`;
+                        if (nextStop.eta !== null) {
+                            const etaMinutes = Math.floor(nextStop.eta / 60);
+                            const etaSeconds = nextStop.eta % 60;
+                            cardHTML += `<p>ETA: ${etaMinutes}m ${etaSeconds}s</p>`;
+                        }
+                    }
+                    
+                    card.innerHTML = cardHTML;
                     busInfoDiv.appendChild(card);
-                });
+                }
             } catch (error) {
                 console.error('Error updating bus locations:', error);
             }
@@ -251,8 +392,15 @@
         document.getElementById('embedUrl').textContent = window.location.origin + '/embed';
         
         // Initial load
-        loadRoutes();
-        updateBusLocations();
+        async function initialize() {
+            await loadRoutes();
+            await loadStops();
+            await loadBuses();
+            await loadAssignments();
+            await updateBusLocations();
+        }
+        
+        initialize();
         
         // Update every 5 seconds
         setInterval(updateBusLocations, 5000);

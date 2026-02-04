@@ -14,7 +14,64 @@
 
 3. **Access the application:**
    - Dashboard: http://localhost:3000
+   - Admin Panel: http://localhost:3000/admin  ⭐ **NEW**
    - Embeddable map: http://localhost:3000/embed
+
+## New Features Overview
+
+The tracker now includes:
+- 🛣️ Route management with visual builder
+- 🛑 Stop management with map picker
+- 🚌 Bus registration and tracker assignment
+- 🔄 Bus-to-route assignments
+- ⏱️ Real-time ETA calculations
+- 🎨 Comprehensive admin panel
+
+## Quick Setup (5 minutes)
+
+### 1. Create a Route (Admin Panel)
+
+1. Go to http://localhost:3000/admin
+2. Click the **Routes** tab
+3. Click on the map to add waypoints (the route will automatically follow roads between them!)
+4. Enter a name: "City Tour"
+5. Choose a color
+6. Click **Add Route (Road-Following)**
+
+### 2. Add Stops (Admin Panel)
+
+1. Click the **Stops** tab
+2. Select your route from the dropdown
+3. Click **Pick from Map** and click on the stop location
+4. Enter stop name: "City Hall"
+5. Set order: 1
+6. Click **Add Stop**
+7. Repeat for more stops (order: 2, 3, 4...)
+
+### 3. Register a Bus (Admin Panel)
+
+1. Click the **Buses** tab
+2. Enter name: "Red Bus"
+3. Enter number: "101"
+4. Enter tracker ID: "AB" (from OwnTracks)
+5. Click **Add Bus**
+
+### 4. Assign Bus to Route (Admin Panel)
+
+1. Click the **Assignments** tab
+2. Select "Red Bus" from dropdown
+3. Select "City Tour" from dropdown
+4. Click **Assign Bus to Route**
+
+### 5. Configure OwnTracks
+
+1. Open OwnTracks app on your phone
+2. Set Mode: **HTTP**
+3. Set URL: `http://YOUR-SERVER-IP:3000/owntracks`
+4. Set Device ID (TID): **AB** (must match step 3)
+5. Enable location tracking
+
+Done! View live tracking at http://localhost:3000
 
 ## Sending Test Data
 
