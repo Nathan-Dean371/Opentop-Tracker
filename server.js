@@ -43,8 +43,16 @@ app.use(express.static('public'));
 // Serve Leaflet from node_modules
 app.use('/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
 
-// Data file path
-const DATA_FILE = path.join(__dirname, 'data.json');
+// Data file path - use Railway volume if available, otherwise current directory
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const DATA_FILE = path.join(DATA_DIR, 'data.json');
+
+// Ensure data directory exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+console.log(`📁 Data will be stored at: ${DATA_FILE}`);
 
 // Storage: bus locations are in-memory (real-time), everything else persists
 let busLocations = {};
