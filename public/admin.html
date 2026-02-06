@@ -770,7 +770,7 @@
             const startOrder = parseInt(document.getElementById('bulkStartOrder').value);
             
             // Parse the bulk data
-            const lines = bulkData.split('\\n').filter(line => line.trim());
+            const lines = bulkData.split('\n').filter(line => line.trim());
             const stopsToAdd = [];
             
             for (let i = 0; i < lines.length; i++) {
