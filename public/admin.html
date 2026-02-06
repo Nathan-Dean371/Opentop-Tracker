@@ -431,9 +431,25 @@
                         <option value="unassigned">Unassigned</option>
                     </select>
                 </div>
+                
+                <div id="bulkAssignSection" class="form-section" style="margin-bottom: 20px; display: none;">
+                    <h4><span id="selectedCount">0</span> stops selected</h4>
+                    <div style="display: flex; gap: 10px; align-items: flex-end;">
+                        <div class="form-group" style="flex: 1; margin: 0;">
+                            <label for="bulkAssignRoute">Assign to Route:</label>
+                            <select id="bulkAssignRoute" style="width: 100%;">
+                                <option value="">Select a route</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-success" onclick="bulkAssignStopsToRoute()">Assign Selected</button>
+                        <button class="btn btn-secondary" onclick="clearStopSelection()">Clear Selection</button>
+                    </div>
+                </div>
+                
                 <table id="stopsTable">
                     <thead>
                         <tr>
+                            <th><input type="checkbox" id="selectAllStops" onchange="toggleSelectAllStops()"></th>
                             <th>Name</th>
                             <th>Route</th>
                             <th>Order</th>
@@ -1048,6 +1064,7 @@
                 const route = routes.find(r => r.id === stop.routeId);
                 return `
                     <tr>
+                        <td><input type="checkbox" class="stop-checkbox" data-stop-id="${stop.id}" onchange="updateStopSelection()"></td>
                         <td>${stop.name}</td>
                         <td>${route ? route.name : 'N/A'}</td>
                         <td>${stop.order}</td>
@@ -1059,6 +1076,9 @@
                     </tr>
                 `;
             }).join('');
+            
+            // Reset selection when filter changes
+            updateStopSelection();
         }
         
         async function loadBuses() {
@@ -1212,11 +1232,95 @@
             }
         }
         
+        // Stop selection and bulk assignment functions
+        function updateStopSelection() {
+            const checkboxes = document.querySelectorAll('.stop-checkbox:checked');
+            const count = checkboxes.length;
+            const bulkSection = document.getElementById('bulkAssignSection');
+            const selectedCountSpan = document.getElementById('selectedCount');
+            
+            selectedCountSpan.textContent = count;
+            bulkSection.style.display = count > 0 ? 'block' : 'none';
+            
+            // Update select all checkbox
+            const allCheckboxes = document.querySelectorAll('.stop-checkbox');
+            const selectAllCheckbox = document.getElementById('selectAllStops');
+            if (selectAllCheckbox) {
+                selectAllCheckbox.checked = allCheckboxes.length > 0 && count === allCheckboxes.length;
+                selectAllCheckbox.indeterminate = count > 0 && count < allCheckboxes.length;
+            }
+        }
+        
+        function toggleSelectAllStops() {
+            const selectAll = document.getElementById('selectAllStops').checked;
+            const checkboxes = document.querySelectorAll('.stop-checkbox');
+            checkboxes.forEach(cb => cb.checked = selectAll);
+            updateStopSelection();
+        }
+        
+        function clearStopSelection() {
+            const checkboxes = document.querySelectorAll('.stop-checkbox');
+            checkboxes.forEach(cb => cb.checked = false);
+            document.getElementById('selectAllStops').checked = false;
+            updateStopSelection();
+        }
+        
+        async function bulkAssignStopsToRoute() {
+            const routeId = document.getElementById('bulkAssignRoute').value;
+            if (!routeId) {
+                showAlert('Please select a route', 'error');
+                return;
+            }
+            
+            const checkboxes = document.querySelectorAll('.stop-checkbox:checked');
+            const stopIds = Array.from(checkboxes).map(cb => cb.dataset.stopId);
+            
+            if (stopIds.length === 0) {
+                showAlert('No stops selected', 'error');
+                return;
+            }
+            
+            if (!confirm(`Assign ${stopIds.length} stop(s) to the selected route?`)) {
+                return;
+            }
+            
+            try {
+                let successCount = 0;
+                for (const stopId of stopIds) {
+                    const stop = stops.find(s => s.id === stopId);
+                    if (stop) {
+                        const response = await fetch(`/api/stops/${stopId}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                name: stop.name,
+                                lat: stop.lat,
+                                lon: stop.lon,
+                                routeId: routeId,
+                                order: stop.order
+                            })
+                        });
+                        
+                        if (response.ok) {
+                            successCount++;
+                        }
+                    }
+                }
+                
+                showAlert(`Successfully assigned ${successCount} stop(s) to route!`);
+                clearStopSelection();
+                loadStops();
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+        
         // Update select dropdowns
         function updateRouteSelects() {
             const stopRouteSelect = document.getElementById('stopRoute');
             const assignRouteSelect = document.getElementById('assignRoute');
             const bulkStopRouteSelect = document.getElementById('bulkStopRoute');
+            const bulkAssignRouteSelect = document.getElementById('bulkAssignRoute');
             
             const options = routes.map(route => 
                 `<option value="${route.id}">${route.name}</option>`
@@ -1225,6 +1329,7 @@
             stopRouteSelect.innerHTML = '<option value="">Select a route</option>' + options;
             assignRouteSelect.innerHTML = '<option value="">Select a route</option>' + options;
             bulkStopRouteSelect.innerHTML = '<option value="">Select a route</option>' + options;
+            bulkAssignRouteSelect.innerHTML = '<option value="">Select a route</option>' + options;
         }
         
         function updateBusSelects() {
