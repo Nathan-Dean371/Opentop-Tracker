@@ -37,7 +37,8 @@ const upload = multer({ dest: 'uploads/' });
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increased limit for large route coordinates
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(express.static('public'));
 // Serve Leaflet from node_modules
 app.use('/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
