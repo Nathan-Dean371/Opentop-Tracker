@@ -248,6 +248,45 @@ app.delete('/api/stops/:id', basicAuth, (req, res) => {
   res.status(204).send();
 });
 
+// Create stops from route waypoints
+app.post('/api/routes/:routeId/create-stops', basicAuth, (req, res) => {
+  const { routeId } = req.params;
+  const { stopNamePrefix } = req.body;
+  
+  const route = routes.find(r => r.id === routeId);
+  if (!route) {
+    return res.status(404).json({ error: 'Route not found' });
+  }
+  
+  // Use waypoints if available, otherwise use coordinates
+  const points = route.waypoints || route.coordinates;
+  
+  if (!points || points.length === 0) {
+    return res.status(400).json({ error: 'Route has no waypoints' });
+  }
+  
+  const createdStops = [];
+  points.forEach((point, index) => {
+    const stop = {
+      id: `stop-${Date.now()}-${index}`,
+      name: stopNamePrefix ? `${stopNamePrefix} ${index + 1}` : `Stop ${index + 1}`,
+      lat: point[0],
+      lon: point[1],
+      routeId: routeId,
+      order: index + 1,
+      createdAt: new Date().toISOString()
+    };
+    stops.push(stop);
+    createdStops.push(stop);
+  });
+  
+  dataChanged = true;
+  res.status(201).json({
+    message: `Created ${createdStops.length} stops from route waypoints`,
+    stops: createdStops
+  });
+});
+
 // Get all buses
 app.get('/api/buses', (req, res) => {
   res.json(buses);

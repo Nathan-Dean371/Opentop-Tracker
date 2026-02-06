@@ -853,6 +853,7 @@
                         <td>${route.coordinates.length} points</td>
                         <td>${new Date(route.createdAt).toLocaleDateString()}</td>
                         <td class="actions">
+                            <button class="btn btn-primary" onclick="createStopsFromRoute('${route.id}', '${route.name.replace(/'/g, "\\'")}')">Create Stops</button>
                             <button class="btn btn-danger" onclick="deleteRoute('${route.id}')">Delete</button>
                         </td>
                     </tr>
@@ -934,6 +935,33 @@
                 }).join('');
             } catch (error) {
                 console.error('Error loading assignments:', error);
+            }
+        }
+        
+        // Create stops from route waypoints
+        async function createStopsFromRoute(routeId, routeName) {
+            const stopNamePrefix = prompt(`Enter prefix for stop names (e.g., "${routeName}")`, routeName);
+            if (!stopNamePrefix && stopNamePrefix !== '') return; // null means cancelled
+            
+            if (!confirm(`This will create stops from all waypoints in "${routeName}". Continue?`)) return;
+            
+            try {
+                const response = await fetch(`/api/routes/${routeId}/create-stops`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stopNamePrefix })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    showAlert(result.message);
+                    loadStops();
+                } else {
+                    const error = await response.json();
+                    showAlert(error.error || 'Error creating stops', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
             }
         }
         
