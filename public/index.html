@@ -292,6 +292,9 @@
             return null;
         }
         
+        // Store bus info cards to update them without rebuilding
+        const busInfoCards = {};
+        
         // Update bus locations
         async function updateBusLocations() {
             try {
@@ -299,14 +302,19 @@
                 const locations = await response.json();
                 
                 const busInfoDiv = document.getElementById('busInfo');
-                busInfoDiv.innerHTML = '';
                 
                 if (Object.keys(locations).length === 0) {
                     busInfoDiv.innerHTML = '<p>No bus location data available yet. Send data from OwnTracks to get started.</p>';
+                    // Clear any stored card references
+                    Object.keys(busInfoCards).forEach(key => delete busInfoCards[key]);
                     return;
                 }
                 
+                // Track which buses are still active
+                const activeBuses = new Set();
+                
                 for (const [deviceId, location] of Object.entries(locations)) {
+                    activeBuses.add(deviceId);
                     const { lat, lon, timestamp, battery, accuracy, velocity } = location;
                     
                     // Find bus info
@@ -356,9 +364,7 @@
                     
                     busMarkers[deviceId].setPopupContent(popupContent);
                     
-                    // Add info card
-                    const card = document.createElement('div');
-                    card.className = 'bus-card';
+                    // Build card HTML
                     let cardHTML = `
                         <h3>${busName}</h3>
                         <p><span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span></p>
@@ -380,9 +386,27 @@
                         }
                     }
                     
-                    card.innerHTML = cardHTML;
-                    busInfoDiv.appendChild(card);
+                    // Update existing card or create new one
+                    if (busInfoCards[deviceId]) {
+                        // Update existing card without recreating it
+                        busInfoCards[deviceId].innerHTML = cardHTML;
+                    } else {
+                        // Create new card
+                        const card = document.createElement('div');
+                        card.className = 'bus-card';
+                        card.innerHTML = cardHTML;
+                        busInfoDiv.appendChild(card);
+                        busInfoCards[deviceId] = card;
+                    }
                 }
+                
+                // Remove cards for buses that are no longer present
+                Object.keys(busInfoCards).forEach(deviceId => {
+                    if (!activeBuses.has(deviceId)) {
+                        busInfoCards[deviceId].remove();
+                        delete busInfoCards[deviceId];
+                    }
+                });
             } catch (error) {
                 console.error('Error updating bus locations:', error);
             }
