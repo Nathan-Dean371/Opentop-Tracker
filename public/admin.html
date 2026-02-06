@@ -816,19 +816,6 @@
                 showAlert('Error: ' + error.message, 'error');
             }
         });
-                    e.target.reset();
-                    if (stopMarker) {
-                        stopMap.removeLayer(stopMarker);
-                        stopMarker = null;
-                    }
-                    loadStops();
-                } else {
-                    showAlert('Error adding stop', 'error');
-                }
-            } catch (error) {
-                showAlert('Error: ' + error.message, 'error');
-            }
-        });
         
         document.getElementById('addBusForm').addEventListener('submit', async (e) => {
             e.preventDefault();
