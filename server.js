@@ -42,13 +42,67 @@ app.use(express.static('public'));
 // Serve Leaflet from node_modules
 app.use('/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
 
-// In-memory storage for bus locations, routes, stops, and bus assignments
+// Data file path
+const DATA_FILE = path.join(__dirname, 'data.json');
+
+// Storage: bus locations are in-memory (real-time), everything else persists
 let busLocations = {};
 let routes = [];
 let stops = [];
 let buses = [];
 let busAssignments = {}; // Maps tracker ID to bus ID
 let busRouteAssignments = {}; // Maps bus ID to route ID
+
+// Load persisted data on startup
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      routes = data.routes || [];
+      stops = data.stops || [];
+      buses = data.buses || [];
+      busAssignments = data.busAssignments || {};
+      busRouteAssignments = data.busRouteAssignments || {};
+      console.log('✅ Loaded persisted data:', {
+        routes: routes.length,
+        stops: stops.length,
+        buses: buses.length
+      });
+    }
+  } catch (error) {
+    console.error('⚠️ Error loading data:', error.message);
+  }
+}
+
+// Save data to disk
+function saveData() {
+  try {
+    const data = {
+      routes,
+      stops,
+      buses,
+      busAssignments,
+      busRouteAssignments,
+      savedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    console.log('💾 Data saved to disk');
+  } catch (error) {
+    console.error('⚠️ Error saving data:', error.message);
+  }
+}
+
+// Auto-save every 30 seconds if data changed
+let dataChanged = false;
+setInterval(() => {
+  if (dataChanged) {
+    saveData();
+    dataChanged = false;
+  }
+}, 30000);
+
+// Load data on startup
+loadData();
 
 // OwnTracks webhook endpoint
 app.post('/owntracks', (req, res) => {
@@ -96,6 +150,7 @@ app.post('/api/routes', basicAuth, (req, res) => {
     createdAt: new Date().toISOString()
   };
   routes.push(route);
+  dataChanged = true;
   res.status(201).json(route);
 });
 
@@ -116,6 +171,7 @@ app.put('/api/routes/:id', basicAuth, (req, res) => {
     color: color || routes[routeIndex].color
   };
   
+  dataChanged = true;
   res.json(routes[routeIndex]);
 });
 
@@ -150,6 +206,7 @@ app.post('/api/stops', basicAuth, (req, res) => {
     createdAt: new Date().toISOString()
   };
   stops.push(stop);
+  dataChanged = true;
   res.status(201).json(stop);
 });
 
@@ -172,6 +229,7 @@ app.put('/api/stops/:id', basicAuth, (req, res) => {
     order: order !== undefined ? order : stops[stopIndex].order
   };
   
+  dataChanged = true;
   res.json(stops[stopIndex]);
 });
 
@@ -185,6 +243,7 @@ app.delete('/api/stops/:id', basicAuth, (req, res) => {
   }
   
   stops.splice(stopIndex, 1);
+  dataChanged = true;
   res.status(204).send();
 });
 
@@ -209,6 +268,7 @@ app.post('/api/buses', basicAuth, (req, res) => {
     busAssignments[trackerId] = bus.id;
   }
   
+  dataChanged = true;
   res.status(201).json(bus);
 });
 
@@ -239,6 +299,7 @@ app.put('/api/buses/:id', basicAuth, (req, res) => {
     busAssignments[trackerId] = id;
   }
   
+  dataChanged = true;
   res.json(buses[busIndex]);
 });
 
@@ -260,6 +321,7 @@ app.delete('/api/buses/:id', basicAuth, (req, res) => {
   delete busRouteAssignments[id];
   
   buses.splice(busIndex, 1);
+  dataChanged = true;
   res.status(204).send();
 });
 
@@ -279,6 +341,7 @@ app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
   }
   
   busRouteAssignments[busId] = routeId;
+  dataChanged = true;
   res.json({ busId, routeId, message: 'Bus assigned to route successfully' });
 });
 
@@ -553,6 +616,7 @@ app.post('/api/import/google-maps', upload.single('file'), basicAuth, (req, res)
     // Clean up uploaded file
     fs.unlinkSync(req.file.path);
     
+    dataChanged = true;
     res.json({
       success: true,
       routes: addedRoutes,
@@ -607,4 +671,18 @@ app.listen(PORT, () => {
   console.log(`OwnTracks webhook endpoint: http://localhost:${PORT}/owntracks`);
   console.log(`\n🔐 Admin credentials: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD === 'opentop123' ? ADMIN_PASSWORD + ' (default - change in production!)' : '***'}`);
   console.log(`💚 Health check: http://localhost:${PORT}/health`);
+});
+
+// Graceful shutdown - save data on exit
+process.on('SIGINT', () => {
+  console.log('\n\n💾 Saving data before shutdown...');
+  saveData();
+  console.log('✅ Data saved. Goodbye!');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n💾 Saving data before shutdown...');
+  saveData();
+  process.exit(0);
 });
