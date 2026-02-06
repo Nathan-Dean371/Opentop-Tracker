@@ -108,7 +108,8 @@
                 routeLayers.forEach(layer => map.removeLayer(layer));
                 routeLayers = [];
                 
-                routes.forEach(route => {
+                // Only display visible routes
+                routes.filter(route => route.visible !== false).forEach(route => {
                     const layer = L.polyline(route.coordinates, {
                         color: route.color || '#3388ff',
                         weight: 4,
@@ -227,7 +228,11 @@
                     
                     if (etaData && etaData.nextStop) {
                         const { nextStop } = etaData;
-                        popupContent += `<br><br><b>Next Stop:</b><br>`;
+                        popupContent += `<br><br><b>Next Stop:</b>`;
+                        if (nextStop.isManualOverride) {
+                            popupContent += ` <span style="color: #ff9800; font-size: 11px;">(Manual)</span>`;
+                        }
+                        popupContent += `<br>`;
                         popupContent += `${nextStop.name}<br>`;
                         popupContent += `Distance: ${nextStop.distance}m<br>`;
                         if (nextStop.eta !== null) {

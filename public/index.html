@@ -217,7 +217,8 @@
                 routeLayers.forEach(layer => map.removeLayer(layer));
                 routeLayers = [];
                 
-                routes.forEach(route => {
+                // Only display visible routes
+                routes.filter(route => route.visible !== false).forEach(route => {
                     const layer = L.polyline(route.coordinates, {
                         color: route.color || '#3388ff',
                         weight: 4,
@@ -310,6 +311,14 @@
                     return;
                 }
                 
+                // Clear any initial loading messages
+                const initialMessages = busInfoDiv.querySelectorAll('p');
+                initialMessages.forEach(p => {
+                    if (!p.parentElement.classList.contains('bus-card')) {
+                        p.remove();
+                    }
+                });
+                
                 // Track which buses are still active
                 const activeBuses = new Set();
                 
@@ -350,7 +359,11 @@
                     
                     if (etaData && etaData.nextStop) {
                         const { nextStop } = etaData;
-                        popupContent += `<br><br><b>Next Stop:</b><br>`;
+                        popupContent += `<br><br><b>Next Stop:</b>`;
+                        if (nextStop.isManualOverride) {
+                            popupContent += ` <span style="color: #ff9800; font-size: 11px;">(Manual)</span>`;
+                        }
+                        popupContent += `<br>`;
                         popupContent += `${nextStop.name}<br>`;
                         popupContent += `Distance: ${nextStop.distance}m<br>`;
                         if (nextStop.eta !== null) {
@@ -377,7 +390,11 @@
                     if (etaData && etaData.nextStop) {
                         const { nextStop } = etaData;
                         cardHTML += `<hr style="margin: 8px 0;">`;
-                        cardHTML += `<p><b>Next Stop:</b> ${nextStop.name}</p>`;
+                        cardHTML += `<p><b>Next Stop:</b> ${nextStop.name}`;
+                        if (nextStop.isManualOverride) {
+                            cardHTML += ` <span style="color: #ff9800; font-size: 11px; font-weight: bold;">(Manual)</span>`;
+                        }
+                        cardHTML += `</p>`;
                         cardHTML += `<p>Distance: ${nextStop.distance}m</p>`;
                         if (nextStop.eta !== null) {
                             const etaMinutes = Math.floor(nextStop.eta / 60);

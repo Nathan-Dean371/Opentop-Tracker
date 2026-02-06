@@ -61,6 +61,7 @@ let stops = [];
 let buses = [];
 let busAssignments = {}; // Maps tracker ID to bus ID
 let busRouteAssignments = {}; // Maps bus ID to route ID
+let manualNextStops = {}; // Maps bus ID to manually set next stop ID
 
 // Load persisted data on startup
 function loadData() {
@@ -72,6 +73,7 @@ function loadData() {
       buses = data.buses || [];
       busAssignments = data.busAssignments || {};
       busRouteAssignments = data.busRouteAssignments || {};
+      manualNextStops = data.manualNextStops || {};
       console.log('✅ Loaded persisted data:', {
         routes: routes.length,
         stops: stops.length,
@@ -92,6 +94,7 @@ function saveData() {
       buses,
       busAssignments,
       busRouteAssignments,
+      manualNextStops,
       savedAt: new Date().toISOString()
     };
     fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
@@ -156,6 +159,7 @@ app.post('/api/routes', basicAuth, (req, res) => {
     coordinates,
     waypoints: waypoints || coordinates,  // Store original waypoints for editing
     color: color || '#3388ff',
+    visible: true, // Routes are visible by default
     createdAt: new Date().toISOString()
   };
   routes.push(route);
@@ -196,6 +200,21 @@ app.delete('/api/routes/:id', basicAuth, (req, res) => {
   routes.splice(routeIndex, 1);
   dataChanged = true;
   res.status(204).send();
+});
+
+// Toggle route visibility
+app.post('/api/routes/:id/visibility', basicAuth, (req, res) => {
+  const { id } = req.params;
+  const { visible } = req.body;
+  const routeIndex = routes.findIndex(r => r.id === id);
+  
+  if (routeIndex === -1) {
+    return res.status(404).json({ error: 'Route not found' });
+  }
+  
+  routes[routeIndex].visible = visible;
+  dataChanged = true;
+  res.json({ id, visible, message: 'Route visibility updated' });
 });
 
 // Get all stops
@@ -255,6 +274,33 @@ app.delete('/api/stops/:id', basicAuth, (req, res) => {
   stops.splice(stopIndex, 1);
   dataChanged = true;
   res.status(204).send();
+});
+
+// Bulk add stops
+app.post('/api/stops/bulk', basicAuth, (req, res) => {
+  const { stops: stopsToAdd } = req.body;
+  
+  if (!Array.isArray(stopsToAdd) || stopsToAdd.length === 0) {
+    return res.status(400).json({ error: 'Invalid stops data' });
+  }
+  
+  const addedStops = [];
+  stopsToAdd.forEach((stopData, index) => {
+    const stop = {
+      id: `stop-${Date.now()}-${index}`,
+      name: stopData.name,
+      lat: stopData.lat,
+      lon: stopData.lon,
+      routeId: stopData.routeId,
+      order: stopData.order || 0,
+      createdAt: new Date().toISOString()
+    };
+    stops.push(stop);
+    addedStops.push(stop);
+  });
+  
+  dataChanged = true;
+  res.status(201).json({ count: addedStops.length, stops: addedStops });
 });
 
 // Create stops from route waypoints
@@ -394,6 +440,35 @@ app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
   res.json({ busId, routeId, message: 'Bus assigned to route successfully' });
 });
 
+// Set manual next stop for a bus (for testing)
+app.post('/api/buses/:busId/set-next-stop', basicAuth, (req, res) => {
+  const { busId } = req.params;
+  const { stopId } = req.body;
+  
+  const bus = buses.find(b => b.id === busId);
+  if (!bus) {
+    return res.status(404).json({ error: 'Bus not found' });
+  }
+  
+  const stop = stops.find(s => s.id === stopId);
+  if (!stop) {
+    return res.status(404).json({ error: 'Stop not found' });
+  }
+  
+  manualNextStops[busId] = stopId;
+  dataChanged = true;
+  res.json({ busId, stopId, message: 'Manual next stop set successfully' });
+});
+
+// Clear manual next stop for a bus
+app.post('/api/buses/:busId/clear-next-stop', basicAuth, (req, res) => {
+  const { busId } = req.params;
+  
+  delete manualNextStops[busId];
+  dataChanged = true;
+  res.json({ busId, message: 'Manual next stop cleared' });
+});
+
 // Get bus assignments
 app.get('/api/assignments', (req, res) => {
   res.json({
@@ -429,23 +504,41 @@ app.get('/api/eta/:trackerId', (req, res) => {
     return res.status(404).json({ error: 'No stops defined for this route' });
   }
   
-  // Find next stop based on distance
+  // Check for manual next stop override
   let nextStop = null;
   let minDistance = Infinity;
+  let isManualOverride = false;
   
-  routeStops.forEach(stop => {
-    const distance = calculateDistance(
-      busLocation.lat,
-      busLocation.lon,
-      stop.lat,
-      stop.lon
-    );
-    
-    if (distance < minDistance) {
-      minDistance = distance;
-      nextStop = stop;
+  if (manualNextStops[busId]) {
+    // Use manually set next stop
+    nextStop = routeStops.find(s => s.id === manualNextStops[busId]);
+    if (nextStop) {
+      minDistance = calculateDistance(
+        busLocation.lat,
+        busLocation.lon,
+        nextStop.lat,
+        nextStop.lon
+      );
+      isManualOverride = true;
     }
-  });
+  }
+  
+  // If no manual override or manual stop not found, find next stop based on distance
+  if (!nextStop) {
+    routeStops.forEach(stop => {
+      const distance = calculateDistance(
+        busLocation.lat,
+        busLocation.lon,
+        stop.lat,
+        stop.lon
+      );
+      
+      if (distance < minDistance) {
+        minDistance = distance;
+        nextStop = stop;
+      }
+    });
+  }
   
   // Calculate ETA based on current speed and distance
   const speed = busLocation.velocity || 0; // m/s
@@ -462,7 +555,8 @@ app.get('/api/eta/:trackerId', (req, res) => {
     nextStop: {
       ...nextStop,
       distance: Math.round(minDistance),
-      eta: eta
+      eta: eta,
+      isManualOverride
     },
     currentSpeed: speed ? (speed * 3.6).toFixed(1) : '0', // km/h
     allStops: routeStops
@@ -640,6 +734,7 @@ app.post('/api/import/google-maps', upload.single('file'), basicAuth, (req, res)
           coordinates: route.coordinates,
           waypoints: route.waypoints,
           color: routeColor, // Use color from color picker
+          visible: true, // Routes are visible by default
           createdAt: new Date().toISOString()
         };
         routes.push(newRoute);

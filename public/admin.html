@@ -387,6 +387,28 @@
                 </div>
             </div>
             
+            <div class="form-section" style="margin: 20px 0;">
+                <h3>Bulk Add Stops</h3>
+                <p style="margin-bottom: 10px; color: #666;">Add multiple stops to a route at once. Enter one stop per line in format: name, latitude, longitude</p>
+                <form id="bulkAddStopsForm">
+                    <div class="form-group">
+                        <label for="bulkStopRoute">Route</label>
+                        <select id="bulkStopRoute" required>
+                            <option value="">Select a route</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="bulkStopData">Stops Data (one per line: name, lat, lon)</label>
+                        <textarea id="bulkStopData" rows="8" placeholder="Eyre Square, 53.274664, -9.050298&#10;Forster Street, 53.275129, -9.046315&#10;Spanish Arch, 53.270426, -9.054783" required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="bulkStartOrder">Starting Order Number</label>
+                        <input type="number" id="bulkStartOrder" min="0" value="0" required>
+                    </div>
+                    <button type="submit" class="btn btn-success">Add All Stops</button>
+                </form>
+            </div>
+            
             <div class="list-section">
                 <h3>Import from Google Maps</h3>
                 <div class="form-section" style="margin-bottom: 20px;">
@@ -496,6 +518,27 @@
                     </thead>
                     <tbody></tbody>
                 </table>
+            </div>
+            
+            <div class="form-section" style="margin-top: 30px;">
+                <h3>Manual Next Stop Override (For Testing)</h3>
+                <p style="margin-bottom: 15px; color: #666;">Manually set the next stop for a bus to test ETA calculations.</p>
+                <form id="setNextStopForm">
+                    <div class="form-group">
+                        <label for="nextStopBus">Bus</label>
+                        <select id="nextStopBus" required onchange="updateNextStopOptions()">
+                            <option value="">Select a bus</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="nextStopStop">Next Stop</label>
+                        <select id="nextStopStop" required>
+                            <option value="">Select a stop</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-success">Set Next Stop</button>
+                    <button type="button" class="btn btn-secondary" onclick="clearNextStop()">Clear Override</button>
+                </form>
             </div>
         </div>
     </div>
@@ -719,6 +762,74 @@
             }
         });
         
+        document.getElementById('bulkAddStopsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const routeId = document.getElementById('bulkStopRoute').value;
+            const bulkData = document.getElementById('bulkStopData').value;
+            const startOrder = parseInt(document.getElementById('bulkStartOrder').value);
+            
+            // Parse the bulk data
+            const lines = bulkData.split('\\n').filter(line => line.trim());
+            const stopsToAdd = [];
+            
+            for (let i = 0; i < lines.length; i++) {
+                const parts = lines[i].split(',').map(p => p.trim());
+                if (parts.length >= 3) {
+                    const name = parts[0];
+                    const lat = parseFloat(parts[1]);
+                    const lon = parseFloat(parts[2]);
+                    
+                    if (!isNaN(lat) && !isNaN(lon)) {
+                        stopsToAdd.push({
+                            name,
+                            routeId,
+                            order: startOrder + i,
+                            lat,
+                            lon
+                        });
+                    }
+                }
+            }
+            
+            if (stopsToAdd.length === 0) {
+                showAlert('No valid stops found. Format: name, latitude, longitude', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/stops/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stops: stopsToAdd })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    showAlert(`Successfully added ${result.count} stops!`);
+                    e.target.reset();
+                    loadStops();
+                } else {
+                    showAlert('Error adding stops', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        });
+                    e.target.reset();
+                    if (stopMarker) {
+                        stopMap.removeLayer(stopMarker);
+                        stopMarker = null;
+                    }
+                    loadStops();
+                } else {
+                    showAlert('Error adding stop', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        });
+        
         document.getElementById('addBusForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -765,6 +876,30 @@
                     loadAssignments();
                 } else {
                     showAlert('Error assigning bus to route', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        });
+        
+        // Set manual next stop
+        document.getElementById('setNextStopForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const busId = document.getElementById('nextStopBus').value;
+            const stopId = document.getElementById('nextStopStop').value;
+            
+            try {
+                const response = await fetch(`/api/buses/${busId}/set-next-stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stopId })
+                });
+                
+                if (response.ok) {
+                    showAlert('Next stop set successfully!');
+                } else {
+                    showAlert('Error setting next stop', 'error');
                 }
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');
@@ -856,19 +991,25 @@
                 routes = await response.json();
                 
                 const tbody = document.querySelector('#routesTable tbody');
-                tbody.innerHTML = routes.map(route => `
-                    <tr>
-                        <td>${route.name}</td>
-                        <td><span style="display: inline-block; width: 40px; height: 20px; background: ${route.color}; border-radius: 3px;"></span></td>
-                        <td>${route.coordinates.length} points</td>
-                        <td>${new Date(route.createdAt).toLocaleDateString()}</td>
-                        <td class="actions">
-                            <button class="btn btn-primary" onclick="editRoute('${route.id}')">Edit</button>
-                            <button class="btn btn-primary" onclick="createStopsFromRoute('${route.id}', '${route.name.replace(/'/g, "\\'")}')">Create Stops</button>
-                            <button class="btn btn-danger" onclick="deleteRoute('${route.id}')">Delete</button>
-                        </td>
-                    </tr>
-                `).join('');
+                tbody.innerHTML = routes.map(route => {
+                    const isVisible = route.visible !== false; // Default to visible if not set
+                    return `
+                        <tr>
+                            <td>${route.name}</td>
+                            <td><span style="display: inline-block; width: 40px; height: 20px; background: ${route.color}; border-radius: 3px;"></span></td>
+                            <td>${route.coordinates.length} points</td>
+                            <td>${new Date(route.createdAt).toLocaleDateString()}</td>
+                            <td class="actions">
+                                <button class="btn ${isVisible ? 'btn-secondary' : 'btn-primary'}" onclick="toggleRouteVisibility('${route.id}')">
+                                    ${isVisible ? 'Hide' : 'Show'}
+                                </button>
+                                <button class="btn btn-primary" onclick="editRoute('${route.id}')">Edit</button>
+                                <button class="btn btn-primary" onclick="createStopsFromRoute('${route.id}', '${route.name.replace(/'/g, "\\'")}')">Create Stops</button>
+                                <button class="btn btn-danger" onclick="deleteRoute('${route.id}')">Delete</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
                 
                 updateRouteSelects();
             } catch (error) {
@@ -1026,6 +1167,31 @@
             }
         }
         
+        // Toggle route visibility
+        async function toggleRouteVisibility(id) {
+            const route = routes.find(r => r.id === id);
+            if (!route) return;
+            
+            const newVisibility = route.visible === false ? true : false;
+            
+            try {
+                const response = await fetch(`/api/routes/${id}/visibility`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ visible: newVisibility })
+                });
+                
+                if (response.ok) {
+                    showAlert(`Route ${newVisibility ? 'shown' : 'hidden'} successfully!`);
+                    loadRoutes();
+                } else {
+                    showAlert('Error toggling route visibility', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+        
         async function deleteStop(id) {
             if (!confirm('Are you sure you want to delete this stop?')) return;
             
@@ -1063,6 +1229,7 @@
         function updateRouteSelects() {
             const stopRouteSelect = document.getElementById('stopRoute');
             const assignRouteSelect = document.getElementById('assignRoute');
+            const bulkStopRouteSelect = document.getElementById('bulkStopRoute');
             
             const options = routes.map(route => 
                 `<option value="${route.id}">${route.name}</option>`
@@ -1070,16 +1237,19 @@
             
             stopRouteSelect.innerHTML = '<option value="">Select a route</option>' + options;
             assignRouteSelect.innerHTML = '<option value="">Select a route</option>' + options;
+            bulkStopRouteSelect.innerHTML = '<option value="">Select a route</option>' + options;
         }
         
         function updateBusSelects() {
             const assignBusSelect = document.getElementById('assignBus');
+            const nextStopBusSelect = document.getElementById('nextStopBus');
             
             const options = buses.map(bus => 
                 `<option value="${bus.id}">${bus.name} (${bus.number})</option>`
             ).join('');
             
             assignBusSelect.innerHTML = '<option value="">Select a bus</option>' + options;
+            nextStopBusSelect.innerHTML = '<option value="">Select a bus</option>' + options;
         }
         
         function useMapForStop() {
@@ -1148,6 +1318,63 @@
                     loadStops();
                 } else {
                     showAlert('Error updating stop', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+        
+        // Manual next stop functions
+        function updateNextStopOptions() {
+            const busSelect = document.getElementById('nextStopBus');
+            const stopSelect = document.getElementById('nextStopStop');
+            const busId = busSelect.value;
+            
+            stopSelect.innerHTML = '<option value="">Select a stop</option>';
+            
+            if (!busId) return;
+            
+            // Find the route for this bus
+            const routeId = assignments.busRouteAssignments[busId];
+            if (!routeId) {
+                stopSelect.innerHTML = '<option value="">Bus not assigned to a route</option>';
+                return;
+            }
+            
+            // Get stops for this route
+            const routeStops = stops
+                .filter(s => s.routeId === routeId)
+                .sort((a, b) => a.order - b.order);
+            
+            if (routeStops.length === 0) {
+                stopSelect.innerHTML = '<option value="">No stops for this route</option>';
+                return;
+            }
+            
+            const options = routeStops.map(stop => 
+                `<option value="${stop.id}">${stop.name} (Stop #${stop.order})</option>`
+            ).join('');
+            
+            stopSelect.innerHTML = '<option value="">Select a stop</option>' + options;
+        }
+        
+        async function clearNextStop() {
+            const busId = document.getElementById('nextStopBus').value;
+            if (!busId) {
+                showAlert('Please select a bus first', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/buses/${busId}/clear-next-stop`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    showAlert('Next stop override cleared!');
+                    document.getElementById('setNextStopForm').reset();
+                } else {
+                    showAlert('Error clearing next stop', 'error');
                 }
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');
