@@ -268,7 +268,6 @@
     
     <div class="nav">
         <a href="/">View Map</a>
-        <a href="/embed">Embed View</a>
         <a href="/admin">Admin Panel</a>
     </div>
     
@@ -403,6 +402,13 @@
                 </div>
                 
                 <h3>Existing Stops</h3>
+                <div style="margin-bottom: 15px;">
+                    <label for="stopFilter" style="font-weight: bold; margin-right: 10px;">Filter by Route:</label>
+                    <select id="stopFilter" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;" onchange="filterStops()">
+                        <option value="all">All Stops</option>
+                        <option value="unassigned">Unassigned</option>
+                    </select>
+                </div>
                 <table id="stopsTable">
                     <thead>
                         <tr>
@@ -780,6 +786,10 @@
             const formData = new FormData();
             formData.append('file', file);
             
+            // Add the color from the color picker
+            const routeColor = document.getElementById('routeColor').value;
+            formData.append('color', routeColor);
+            
             try {
                 showAlert('Importing... Please wait.', 'info');
                 const response = await fetch('/api/import/google-maps', {
@@ -853,6 +863,7 @@
                         <td>${route.coordinates.length} points</td>
                         <td>${new Date(route.createdAt).toLocaleDateString()}</td>
                         <td class="actions">
+                            <button class="btn btn-primary" onclick="editRoute('${route.id}')">Edit</button>
                             <button class="btn btn-primary" onclick="createStopsFromRoute('${route.id}', '${route.name.replace(/'/g, "\\'")}')">Create Stops</button>
                             <button class="btn btn-danger" onclick="deleteRoute('${route.id}')">Delete</button>
                         </td>
@@ -870,24 +881,56 @@
                 const response = await fetch('/api/stops');
                 stops = await response.json();
                 
-                const tbody = document.querySelector('#stopsTable tbody');
-                tbody.innerHTML = stops.map(stop => {
-                    const route = routes.find(r => r.id === stop.routeId);
-                    return `
-                        <tr>
-                            <td>${stop.name}</td>
-                            <td>${route ? route.name : 'N/A'}</td>
-                            <td>${stop.order}</td>
-                            <td>${stop.lat.toFixed(6)}, ${stop.lon.toFixed(6)}</td>
-                            <td class="actions">
-                                <button class="btn btn-danger" onclick="deleteStop('${stop.id}')">Delete</button>
-                            </td>
-                        </tr>
-                    `;
-                }).join('');
+                updateStopFilterOptions();
+                filterStops();
             } catch (error) {
                 console.error('Error loading stops:', error);
             }
+        }
+        
+        function updateStopFilterOptions() {
+            const filterSelect = document.getElementById('stopFilter');
+            const currentValue = filterSelect.value;
+            
+            const routeOptions = routes.map(route => 
+                `<option value="${route.id}">${route.name}</option>`
+            ).join('');
+            
+            filterSelect.innerHTML = `
+                <option value="all">All Stops</option>
+                <option value="unassigned">Unassigned</option>
+                ${routeOptions}
+            `;
+            
+            filterSelect.value = currentValue;
+        }
+        
+        function filterStops() {
+            const filterValue = document.getElementById('stopFilter').value;
+            
+            let filteredStops = stops;
+            if (filterValue === 'unassigned') {
+                filteredStops = stops.filter(stop => !stop.routeId);
+            } else if (filterValue !== 'all') {
+                filteredStops = stops.filter(stop => stop.routeId === filterValue);
+            }
+            
+            const tbody = document.querySelector('#stopsTable tbody');
+            tbody.innerHTML = filteredStops.map(stop => {
+                const route = routes.find(r => r.id === stop.routeId);
+                return `
+                    <tr>
+                        <td>${stop.name}</td>
+                        <td>${route ? route.name : 'N/A'}</td>
+                        <td>${stop.order}</td>
+                        <td>${stop.lat.toFixed(6)}, ${stop.lon.toFixed(6)}</td>
+                        <td class="actions">
+                            <button class="btn btn-primary" onclick="editStop('${stop.id}')">Edit</button>
+                            <button class="btn btn-danger" onclick="deleteStop('${stop.id}')">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
         }
         
         async function loadBuses() {
@@ -1041,6 +1084,74 @@
         
         function useMapForStop() {
             showAlert('Click on the map to select a location for the stop', 'success');
+        }
+        
+        // Edit functions
+        async function editRoute(id) {
+            const route = routes.find(r => r.id === id);
+            if (!route) return;
+            
+            const newName = prompt('Enter new route name:', route.name);
+            if (newName === null) return; // Cancelled
+            
+            const newColor = prompt('Enter new route color (hex):', route.color);
+            if (newColor === null) return; // Cancelled
+            
+            try {
+                const response = await fetch(`/api/routes/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: newName,
+                        color: newColor,
+                        coordinates: route.coordinates,
+                        waypoints: route.waypoints
+                    })
+                });
+                
+                if (response.ok) {
+                    showAlert('Route updated successfully!');
+                    loadRoutes();
+                } else {
+                    showAlert('Error updating route', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function editStop(id) {
+            const stop = stops.find(s => s.id === id);
+            if (!stop) return;
+            
+            const newName = prompt('Enter new stop name:', stop.name);
+            if (newName === null) return; // Cancelled
+            
+            const newOrder = prompt('Enter new stop order:', stop.order);
+            if (newOrder === null) return; // Cancelled
+            
+            try {
+                const response = await fetch(`/api/stops/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: newName,
+                        routeId: stop.routeId,
+                        order: parseInt(newOrder),
+                        lat: stop.lat,
+                        lon: stop.lon
+                    })
+                });
+                
+                if (response.ok) {
+                    showAlert('Stop updated successfully!');
+                    loadStops();
+                } else {
+                    showAlert('Error updating stop', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
         }
         
         // Initialize

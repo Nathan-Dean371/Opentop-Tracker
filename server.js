@@ -194,6 +194,7 @@ app.delete('/api/routes/:id', basicAuth, (req, res) => {
   }
   
   routes.splice(routeIndex, 1);
+  dataChanged = true;
   res.status(204).send();
 });
 
@@ -611,6 +612,9 @@ app.post('/api/import/google-maps', upload.single('file'), basicAuth, (req, res)
     const fileContent = fs.readFileSync(req.file.path, 'utf8');
     const fileName = req.file.originalname.toLowerCase();
     
+    // Get color from form data, default to blue if not provided
+    const routeColor = req.body.color || '#3388ff';
+    
     let result = { routes: [], stops: [] };
     
     if (fileName.endsWith('.kml')) {
@@ -635,7 +639,7 @@ app.post('/api/import/google-maps', upload.single('file'), basicAuth, (req, res)
           name: route.name,
           coordinates: route.coordinates,
           waypoints: route.waypoints,
-          color: route.color,
+          color: routeColor, // Use color from color picker
           createdAt: new Date().toISOString()
         };
         routes.push(newRoute);
