@@ -7,6 +7,31 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Admin credentials from environment variables (with defaults for local dev)
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'opentop123';
+
+// Simple Basic Auth middleware for admin panel
+function basicAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
+    return res.status(401).send('Authentication required');
+  }
+  
+  const base64Credentials = authHeader.split(' ')[1];
+  const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
+  const [username, password] = credentials.split(':');
+  
+  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+    next();
+  } else {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
+    res.status(401).send('Invalid credentials');
+  }
+}
+
 // Configure multer for file uploads
 const upload = multer({ dest: 'uploads/' });
 
@@ -60,7 +85,7 @@ app.get('/api/routes', (req, res) => {
 });
 
 // Add a new route
-app.post('/api/routes', (req, res) => {
+app.post('/api/routes', basicAuth, (req, res) => {
   const { name, coordinates, color, waypoints } = req.body;
   const route = {
     id: `route-${Date.now()}`,
@@ -75,7 +100,7 @@ app.post('/api/routes', (req, res) => {
 });
 
 // Update a route
-app.put('/api/routes/:id', (req, res) => {
+app.put('/api/routes/:id', basicAuth, (req, res) => {
   const { id } = req.params;
   const { name, coordinates, color } = req.body;
   const routeIndex = routes.findIndex(r => r.id === id);
@@ -95,7 +120,7 @@ app.put('/api/routes/:id', (req, res) => {
 });
 
 // Delete a route
-app.delete('/api/routes/:id', (req, res) => {
+app.delete('/api/routes/:id', basicAuth, (req, res) => {
   const { id } = req.params;
   const routeIndex = routes.findIndex(r => r.id === id);
   
@@ -113,7 +138,7 @@ app.get('/api/stops', (req, res) => {
 });
 
 // Add a new stop
-app.post('/api/stops', (req, res) => {
+app.post('/api/stops', basicAuth, (req, res) => {
   const { name, lat, lon, routeId, order } = req.body;
   const stop = {
     id: `stop-${Date.now()}`,
@@ -129,7 +154,7 @@ app.post('/api/stops', (req, res) => {
 });
 
 // Update a stop
-app.put('/api/stops/:id', (req, res) => {
+app.put('/api/stops/:id', basicAuth, (req, res) => {
   const { id } = req.params;
   const { name, lat, lon, routeId, order } = req.body;
   const stopIndex = stops.findIndex(s => s.id === id);
@@ -151,7 +176,7 @@ app.put('/api/stops/:id', (req, res) => {
 });
 
 // Delete a stop
-app.delete('/api/stops/:id', (req, res) => {
+app.delete('/api/stops/:id', basicAuth, (req, res) => {
   const { id } = req.params;
   const stopIndex = stops.findIndex(s => s.id === id);
   
@@ -169,7 +194,7 @@ app.get('/api/buses', (req, res) => {
 });
 
 // Add a new bus
-app.post('/api/buses', (req, res) => {
+app.post('/api/buses', basicAuth, (req, res) => {
   const { name, number, trackerId } = req.body;
   const bus = {
     id: `bus-${Date.now()}`,
@@ -188,7 +213,7 @@ app.post('/api/buses', (req, res) => {
 });
 
 // Update a bus
-app.put('/api/buses/:id', (req, res) => {
+app.put('/api/buses/:id', basicAuth, (req, res) => {
   const { id } = req.params;
   const { name, number, trackerId } = req.body;
   const busIndex = buses.findIndex(b => b.id === id);
@@ -218,7 +243,7 @@ app.put('/api/buses/:id', (req, res) => {
 });
 
 // Delete a bus
-app.delete('/api/buses/:id', (req, res) => {
+app.delete('/api/buses/:id', basicAuth, (req, res) => {
   const { id } = req.params;
   const busIndex = buses.findIndex(b => b.id === id);
   
@@ -239,7 +264,7 @@ app.delete('/api/buses/:id', (req, res) => {
 });
 
 // Assign bus to route
-app.post('/api/buses/:busId/assign-route', (req, res) => {
+app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
   const { busId } = req.params;
   const { routeId } = req.body;
   
@@ -466,7 +491,7 @@ function parseCSV(csvContent) {
 }
 
 // Import routes/stops from Google Maps export (KML or CSV)
-app.post('/api/import/google-maps', upload.single('file'), (req, res) => {
+app.post('/api/import/google-maps', upload.single('file'), basicAuth, (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
@@ -558,8 +583,19 @@ app.get('/embed', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'embed.html'));
 });
 
-// Admin panel
-app.get('/admin', (req, res) => {
+// Health check endpoint (for Railway/monitoring)
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    buses: Object.keys(busLocations).length,
+    routes: routes.length
+  });
+});
+
+// Admin panel (protected with basic auth)
+app.get('/admin', basicAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
@@ -569,4 +605,6 @@ app.listen(PORT, () => {
   console.log(`Admin panel at: http://localhost:${PORT}/admin`);
   console.log(`Embeddable map at: http://localhost:${PORT}/embed`);
   console.log(`OwnTracks webhook endpoint: http://localhost:${PORT}/owntracks`);
+  console.log(`\n🔐 Admin credentials: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD === 'opentop123' ? ADMIN_PASSWORD + ' (default - change in production!)' : '***'}`);
+  console.log(`💚 Health check: http://localhost:${PORT}/health`);
 });
