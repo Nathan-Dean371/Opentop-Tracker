@@ -541,11 +541,12 @@ app.get('/api/eta/:trackerId', (req, res) => {
   }
   
   // Calculate ETA based on current speed and distance
-  const speed = busLocation.velocity || 0; // m/s
+  const speedKmh = busLocation.velocity || 0; // km/h (OwnTracks sends velocity in km/h)
+  const speedMs = speedKmh / 3.6; // Convert to m/s for distance calculations
   let eta = null;
   
-  if (speed > 0) {
-    eta = Math.round(minDistance / speed); // seconds
+  if (speedMs > 0) {
+    eta = Math.round(minDistance / speedMs); // seconds
   }
   
   res.json({
@@ -558,7 +559,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
       eta: eta,
       isManualOverride
     },
-    currentSpeed: speed ? (speed * 3.6).toFixed(1) : '0', // km/h
+    currentSpeed: speedKmh ? speedKmh.toFixed(1) : '0', // km/h (already in km/h from OwnTracks)
     allStops: routeStops
   });
 });
