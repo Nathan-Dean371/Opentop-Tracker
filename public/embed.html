@@ -222,7 +222,7 @@
                         <b>${busName}</b><br>
                         <span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span><br>
                         Battery: ${battery || 'N/A'}%<br>
-                        Speed: ${velocity ? (velocity * 3.6).toFixed(1) : 'N/A'} km/h<br>
+                        Speed: ${velocity ? velocity.toFixed(1) : 'N/A'} km/h<br>
                         Updated: ${age}s ago
                     `;
                     

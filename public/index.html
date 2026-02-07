@@ -357,7 +357,7 @@
                         <b>${busName}</b><br>
                         Status: <span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span><br>
                         Battery: ${battery || 'N/A'}%<br>
-                        Speed: ${velocity ? (velocity * 3.6).toFixed(1) : 'N/A'} km/h<br>
+                        Speed: ${velocity ? velocity.toFixed(1) : 'N/A'} km/h<br>
                         Updated: ${age}s ago
                     `;
                     
@@ -386,7 +386,7 @@
                         <h3>${busName}</h3>
                         <p><span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span></p>
                         <p>Battery: ${battery || 'N/A'}%</p>
-                        <p>Speed: ${velocity ? (velocity * 3.6).toFixed(1) : 'N/A'} km/h</p>
+                        <p>Speed: ${velocity ? velocity.toFixed(1) : 'N/A'} km/h</p>
                         <p>Accuracy: ±${accuracy || 'N/A'}m</p>
                         <p>Updated: ${age}s ago</p>
                     `;
