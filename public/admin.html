@@ -1191,6 +1191,7 @@
                 if (response.ok) {
                     showAlert(`Route ${newVisibility ? 'shown' : 'hidden'} successfully!`);
                     loadRoutes();
+                    loadStops(); // Refresh stops display since route visibility affects stop visibility
                 } else {
                     showAlert('Error toggling route visibility', 'error');
                 }

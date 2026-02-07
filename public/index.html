@@ -243,17 +243,21 @@
                 stopMarkers.forEach(marker => map.removeLayer(marker));
                 stopMarkers = [];
                 
+                // Only display stops whose routes are visible
                 stops.forEach(stop => {
                     const route = routes.find(r => r.id === stop.routeId);
-                    const marker = L.marker([stop.lat, stop.lon], { icon: stopIcon })
-                        .addTo(map)
-                        .bindPopup(`
-                            <b>${stop.name}</b><br>
-                            Route: ${route ? route.name : 'N/A'}<br>
-                            Stop #${stop.order}
-                        `);
-                    
-                    stopMarkers.push(marker);
+                    // Only show stops if their route is visible (or has no route)
+                    if (!route || route.visible !== false) {
+                        const marker = L.marker([stop.lat, stop.lon], { icon: stopIcon })
+                            .addTo(map)
+                            .bindPopup(`
+                                <b>${stop.name}</b><br>
+                                Route: ${route ? route.name : 'N/A'}<br>
+                                Stop #${stop.order}
+                            `);
+                        
+                        stopMarkers.push(marker);
+                    }
                 });
             } catch (error) {
                 console.error('Error loading stops:', error);
