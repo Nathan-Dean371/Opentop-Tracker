@@ -40,6 +40,11 @@
             color: white;
         }
         
+        .status.stopped {
+            background: #ff9800;
+            color: white;
+        }
+        
         .status.inactive {
             background: #f44336;
             color: white;
@@ -217,10 +222,23 @@
                     // Update popup
                     const age = Math.floor(Date.now() / 1000 - timestamp);
                     const isActive = age < 300; // Active if updated in last 5 minutes
+                    const isStopped = isActive && (velocity === undefined || velocity < 2); // Stopped if active but not moving
+                    
+                    let statusClass, statusText;
+                    if (!isActive) {
+                        statusClass = 'inactive';
+                        statusText = 'Inactive';
+                    } else if (isStopped) {
+                        statusClass = 'stopped';
+                        statusText = 'Stopped';
+                    } else {
+                        statusClass = 'active';
+                        statusText = 'Active';
+                    }
                     
                     let popupContent = `
                         <b>${busName}</b><br>
-                        <span class="status ${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span><br>
+                        <span class="status ${statusClass}">${statusText}</span><br>
                         Battery: ${battery || 'N/A'}%<br>
                         Speed: ${velocity ? velocity.toFixed(1) : 'N/A'} km/h<br>
                         Updated: ${age}s ago
