@@ -274,6 +274,10 @@
     
     <div class="container">
         <div id="alertContainer"></div>
+        <div style="margin:12px 0;">
+            <button id="adminAddTestBusBtn" class="btn btn-primary">Add Test Bus at Stop #8 (Admin)</button>
+            <button id="adminRemoveTestBusBtn" class="btn btn-secondary" style="display:none; margin-left:8px;">Remove Test Bus</button>
+        </div>
         
         <div class="tabs">
             <button class="tab-button active" onclick="switchTab('routes')">Routes</button>
@@ -1177,6 +1181,94 @@
                 console.error('Error loading assignments:', error);
             }
         }
+
+        // --- Admin test-bus helpers (admin-only) ---
+        const adminTestLocations = {};
+        const adminBusMarkers = {};
+
+        // simple bus icon for admin
+        const adminBusIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+                    <circle cx="12" cy="12" r="11" fill="#FF5722" stroke="white" stroke-width="2"/>
+                    <rect x="7" y="8" width="10" height="8" rx="1" fill="white"/>
+                    <rect x="8" y="9" width="3" height="3" fill="#FF5722"/>
+                    <rect x="13" y="9" width="3" height="3" fill="#FF5722"/>
+                    <circle cx="9" cy="15" r="1" fill="#FF5722"/>
+                    <circle cx="15" cy="15" r="1" fill="#FF5722"/>
+                </svg>
+            `),
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+            popupAnchor: [0, -20]
+        });
+
+        function toRad(v){return v * Math.PI/180;}
+        function haversineMeters(lat1, lon1, lat2, lon2) {
+            const R = 6371000;
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        function addAdminTestBusAtStop8() {
+            if (!stops || stops.length === 0) { showAlert('Stops not loaded yet', 'error'); return; }
+            const startStop = stops.find(s => Number(s.order) === 8) || stops[7] || stops[0];
+            if (!startStop) { showAlert('No suitable stop found', 'error'); return; }
+
+            const deviceId = 'ADMIN-TEST-1';
+            const velocityKmh = 18;
+            const now = Math.floor(Date.now()/1000);
+
+            adminTestLocations[deviceId] = {
+                lat: Number(startStop.lat),
+                lon: Number(startStop.lon),
+                timestamp: now,
+                battery: 100,
+                accuracy: 5,
+                velocity: velocityKmh
+            };
+
+            // place marker on admin map
+            if (adminBusMarkers[deviceId]) { map.removeLayer(adminBusMarkers[deviceId]); }
+            const m = L.marker([startStop.lat, startStop.lon], { icon: adminBusIcon })
+                .addTo(map)
+                .bindPopup(`<b>Admin Test Bus</b><br>At: ${startStop.name || 'Stop'}`);
+            adminBusMarkers[deviceId] = m;
+
+            // compute ETA to first stop
+            const firstStop = stops.find(s => Number(s.order) === 1) || stops[0];
+            if (firstStop) {
+                const distance = Math.round(haversineMeters(startStop.lat, startStop.lon, firstStop.lat, firstStop.lon));
+                const etaSeconds = Math.max(5, Math.round(distance / (velocityKmh / 3.6)));
+                showAdminEtaBar(deviceId, `Next Stop: ${firstStop.name || 'Stop 1'}`, `${Math.floor(etaSeconds/60)}m ${etaSeconds%60}s`);
+            }
+
+            document.getElementById('adminAddTestBusBtn').style.display = 'none';
+            document.getElementById('adminRemoveTestBusBtn').style.display = 'inline-block';
+        }
+
+        function removeAdminTestBus() {
+            const deviceId = 'ADMIN-TEST-1';
+            delete adminTestLocations[deviceId];
+            if (adminBusMarkers[deviceId]) { map.removeLayer(adminBusMarkers[deviceId]); delete adminBusMarkers[deviceId]; }
+            hideAdminEtaBar();
+            document.getElementById('adminAddTestBusBtn').style.display = 'inline-block';
+            document.getElementById('adminRemoveTestBusBtn').style.display = 'none';
+        }
+
+        // ETA bar for admin
+        function showAdminEtaBar(id, stopText, etaText) {
+            let wrapper = document.getElementById('adminEtaWrapper');
+            if (!wrapper) return;
+            document.getElementById('adminEtaStop').textContent = stopText;
+            document.getElementById('adminEtaTime').textContent = etaText;
+            wrapper.style.display = 'flex';
+        }
+        function hideAdminEtaBar(){ const w = document.getElementById('adminEtaWrapper'); if (w) w.style.display='none'; }
+
         
         // Create stops from route waypoints
         async function createStopsFromRoute(routeId, routeName) {
@@ -1445,6 +1537,12 @@
         function useMapForStop() {
             showAlert('Click on the map to select a location for the stop', 'success');
         }
+
+        // admin ETA close button
+        document.addEventListener('click', (ev) => {
+            const close = document.getElementById('adminEtaClose');
+            if (ev.target === close) hideAdminEtaBar();
+        });
         
         // Edit functions
         async function editRoute(id) {
@@ -1578,7 +1676,21 @@
             loadStops();
             loadBuses();
             loadAssignments();
+
+            // wire admin test bus buttons
+            const addBtn = document.getElementById('adminAddTestBusBtn');
+            const removeBtn = document.getElementById('adminRemoveTestBusBtn');
+            if (addBtn) addBtn.addEventListener('click', addAdminTestBusAtStop8);
+            if (removeBtn) removeBtn.addEventListener('click', removeAdminTestBus);
         });
     </script>
+        <!-- Admin ETA bar -->
+        <div id="adminEtaWrapper" class="eta-bar-wrapper" style="display:none;">
+            <div class="eta-bar" role="status">
+                <div class="eta-left"> <span id="adminEtaStop" style="margin-left:12px; font-weight:800;"></span></div>
+                <div class="eta-right" id="adminEtaTime">ETA: —</div>
+                <div id="adminEtaClose" class="eta-close" title="Close">✕</div>
+            </div>
+        </div>
 </body>
 </html>
