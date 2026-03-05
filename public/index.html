@@ -151,6 +151,10 @@
             <div id="busInfo" class="bus-info">
                 <p>Waiting for bus location data...</p>
             </div>
+            <div style="margin-top:12px;">
+                <button id="addTestBusBtn" class="btn btn-primary">Add Test Bus at Stop #8</button>
+                <button id="removeTestBusBtn" class="btn btn-secondary" style="display:none; margin-left:8px;">Remove Test Bus</button>
+            </div>
         </div>
         
         <div id="map"></div>
@@ -278,6 +282,98 @@
                 console.error('Error loading buses:', error);
             }
         }
+
+        // Client-side test locations (merged into live locations)
+        const testLocations = {};
+        // Haversine distance (meters)
+        function haversineMeters(lat1, lon1, lat2, lon2) {
+            function toRad(v){return v * Math.PI/180;}
+            const R = 6371000; // meters
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        // Add a test bus at stop #8 with some velocity so ETA works
+        function addTestBusAtStop8() {
+            if (!stops || stops.length === 0) {
+                alert('Stops are not loaded yet. Try again in a moment.');
+                return;
+            }
+
+            // find stop with order 8 or fallback
+            let startStop = stops.find(s => Number(s.order) === 8) || stops[7] || stops[0];
+            if (!startStop) {
+                alert('No suitable stop found to place test bus.');
+                return;
+            }
+
+            const deviceId = 'TEST-1';
+            const velocityKmh = 18; // give some speed for ETA
+            const now = Math.floor(Date.now() / 1000);
+
+            testLocations[deviceId] = {
+                lat: Number(startStop.lat),
+                lon: Number(startStop.lon),
+                timestamp: now,
+                battery: 100,
+                accuracy: 5,
+                velocity: velocityKmh
+            };
+
+            // ensure a bus record exists for display
+            if (!buses.find(b => b.trackerId === deviceId)) {
+                buses.push({ trackerId: deviceId, name: 'Test Bus', number: 'T1' });
+            }
+
+            // compute next stop as first stop
+            const firstStop = stops.find(s => Number(s.order) === 1) || stops[0];
+            const nextStop = firstStop || null;
+            let etaData = null;
+            if (nextStop) {
+                const distance = Math.round(haversineMeters(startStop.lat, startStop.lon, nextStop.lat, nextStop.lon));
+                const etaSeconds = Math.max(5, Math.round(distance / (velocityKmh / 3.6)));
+                etaData = { nextStop: { name: nextStop.name || 'Stop 1', distance: distance, eta: etaSeconds, isManualOverride: false } };
+            }
+
+            // show ETA bar immediately
+            showNextStopBar(deviceId, buses.find(b => b.trackerId === deviceId), etaData);
+
+            // toggle buttons
+            const addBtn = document.getElementById('addTestBusBtn');
+            const removeBtn = document.getElementById('removeTestBusBtn');
+            if (addBtn) addBtn.style.display = 'none';
+            if (removeBtn) removeBtn.style.display = 'inline-block';
+
+            // ensure map updates include this test location
+            updateBusLocations();
+        }
+
+        function removeTestBus() {
+            const deviceId = 'TEST-1';
+            delete testLocations[deviceId];
+            if (busMarkers[deviceId]) { map.removeLayer(busMarkers[deviceId]); delete busMarkers[deviceId]; }
+            const idx = buses.findIndex(b => b.trackerId === deviceId);
+            if (idx >= 0) buses.splice(idx, 1);
+            hideNextStopBar();
+            const addBtn = document.getElementById('addTestBusBtn');
+            const removeBtn = document.getElementById('removeTestBusBtn');
+            if (addBtn) addBtn.style.display = 'inline-block';
+            if (removeBtn) removeBtn.style.display = 'none';
+        }
+
+        // wire buttons
+        document.addEventListener('DOMContentLoaded', () => {
+            const addBtn = document.getElementById('addTestBusBtn');
+            const removeBtn = document.getElementById('removeTestBusBtn');
+            if (addBtn) addBtn.addEventListener('click', addTestBusAtStop8);
+            if (removeBtn) removeBtn.addEventListener('click', removeTestBus);
+        });
+
         
         // Load assignments
         async function loadAssignments() {
@@ -310,6 +406,10 @@
             try {
                 const response = await fetch('/api/locations');
                 const locations = await response.json();
+                // Merge any client-side test locations so they appear alongside live data
+                for (const k of Object.keys(testLocations)) {
+                    locations[k] = testLocations[k];
+                }
                 
                 const busInfoDiv = document.getElementById('busInfo');
                 
@@ -343,10 +443,19 @@
                     if (busMarkers[deviceId]) {
                         busMarkers[deviceId].setLatLng([lat, lon]);
                     } else {
-                        busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon })
+                        const marker = L.marker([lat, lon], { icon: busIcon })
                             .addTo(map)
                             .bindPopup(`<b>${busName}</b>`);
-                        
+
+                        // When marker is clicked show the ETA bar if operating
+                        marker.on('click', async (ev) => {
+                            // Refresh ETA before showing
+                            const freshEta = await getETA(deviceId);
+                            showNextStopBar(deviceId, bus, freshEta);
+                        });
+
+                        busMarkers[deviceId] = marker;
+
                         // Center map on first bus
                         map.setView([lat, lon], 13);
                     }
@@ -451,6 +560,87 @@
             }
         }
         
+        // Helpers: operating hours, formatting, and ETA bar
+        function toMinutesFromTimeStr(timeStr) {
+            if (!timeStr) return null;
+            timeStr = String(timeStr).trim();
+            if (timeStr.includes(':')) {
+                const parts = timeStr.split(':').map(p => p.trim());
+                const h = parseInt(parts[0], 10);
+                const m = parseInt(parts[1] || '0', 10);
+                if (Number.isFinite(h) && Number.isFinite(m)) return h * 60 + m;
+                return null;
+            }
+            const compact = timeStr.replace(/[^0-9]/g, '');
+            if (/^\d{3,4}$/.test(compact)) {
+                const h = parseInt(compact.slice(0, compact.length - 2), 10);
+                const m = parseInt(compact.slice(-2), 10);
+                return h * 60 + m;
+            }
+            return null;
+        }
+
+        function isWithinOperatingHours(bus) {
+            if (!bus) return false;
+            const s = bus.opStart || bus.operatingStart || bus.start;
+            const e = bus.opEnd || bus.operatingEnd || bus.end;
+            if (!s && !e) return true; // no restriction
+            const now = new Date();
+            const nowMin = now.getHours() * 60 + now.getMinutes();
+            const sMin = toMinutesFromTimeStr(s);
+            const eMin = toMinutesFromTimeStr(e);
+            if (sMin == null || eMin == null) return true;
+            if (sMin <= eMin) {
+                return nowMin >= sMin && nowMin <= eMin;
+            }
+            // overnight schedule (e.g., 22:00 - 04:00)
+            return nowMin >= sMin || nowMin <= eMin;
+        }
+
+        function formatEtaFromNextStop(nextStop) {
+            if (!nextStop) return '—';
+            if (nextStop.eta == null) return 'Calculating...';
+            const mins = Math.floor(nextStop.eta / 60);
+            const secs = nextStop.eta % 60;
+            if (mins > 0) return `${mins}m ${secs}s`;
+            return `${secs}s`;
+        }
+
+        function showNextStopBar(deviceId, bus, etaData) {
+            if (!isWithinOperatingHours(bus)) {
+                // Do not show bar if outside operating hours
+                hideNextStopBar();
+                return;
+            }
+
+            const nextStop = etaData && etaData.nextStop ? etaData.nextStop : null;
+            const name = nextStop ? nextStop.name : 'No next stop';
+            const etaText = nextStop ? formatEtaFromNextStop(nextStop) : '—';
+
+            const left = document.getElementById('etaLeft');
+            const stopNameEl = document.getElementById('etaStopName');
+            const right = document.getElementById('etaRight');
+            stopNameEl.textContent = name;
+            right.textContent = etaText;
+            document.getElementById('etaBarWrapper').style.display = 'flex';
+        }
+
+        function hideNextStopBar() {
+            const wrapper = document.getElementById('etaBarWrapper');
+            if (wrapper) wrapper.style.display = 'none';
+        }
+
+        // Wire up close button and map click to hide the bar
+        document.addEventListener('click', (ev) => {
+            const close = document.getElementById('etaClose');
+            if (ev.target === close) hideNextStopBar();
+        });
+
+        // Hide ETA when clicking on the map (but allow marker clicks to override)
+        if (typeof map !== 'undefined') {
+            map.on && map.on('click', () => hideNextStopBar());
+        }
+
         // Set embed URL
         document.getElementById('embedUrl').textContent = window.location.origin + '/embed';
         
@@ -468,5 +658,13 @@
         // Update every 5 seconds
         setInterval(updateBusLocations, 5000);
     </script>
+    <!-- ETA bar (created/filled via JS) -->
+    <div id="etaBarWrapper" class="eta-bar-wrapper" style="display:none;">
+        <div id="etaBar" class="eta-bar" role="status">
+            <div class="eta-left" id="etaLeft">Next Stop: <span id="etaStopName" style="margin-left:12px; font-weight:800;"></span></div>
+            <div class="eta-right" id="etaRight">ETA: —</div>
+            <div id="etaClose" class="eta-close" title="Close">✕</div>
+        </div>
+    </div>
 </body>
 </html>
