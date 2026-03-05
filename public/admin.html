@@ -259,6 +259,7 @@
             align-items: center;
         }
     </style>
+    <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
     <div class="header">
@@ -479,6 +480,14 @@
                         <label for="busTracker">Tracker ID (OwnTracks TID)</label>
                         <input type="text" id="busTracker" placeholder="e.g., AB, 01, etc.">
                     </div>
+                    <div class="form-group">
+                        <label for="busOpStart">Operating Start (HH:MM)</label>
+                        <input type="time" id="busOpStart">
+                    </div>
+                    <div class="form-group">
+                        <label for="busOpEnd">Operating End (HH:MM)</label>
+                        <input type="time" id="busOpEnd">
+                    </div>
                     <button type="submit" class="btn btn-success">Add Bus</button>
                 </form>
             </div>
@@ -489,6 +498,8 @@
                     <thead>
                         <tr>
                             <th>Name</th>
+                            <th>Start</th>
+                            <th>End</th>
                             <th>Number</th>
                             <th>Tracker ID</th>
                             <th>Created</th>
@@ -704,6 +715,32 @@
                 alertDiv.remove();
             }, 5000);
         }
+
+        // Format time for display: accept '0830' or '08:30' and return '08:30'
+        function formatTimeDisplay(timeStr) {
+            if (!timeStr) return null;
+            if (typeof timeStr !== 'string') timeStr = String(timeStr);
+            timeStr = timeStr.trim();
+            if (timeStr === '') return null;
+            if (timeStr.includes(':')) {
+                // Normalize single-digit hour e.g., '8:30' -> '08:30'
+                const parts = timeStr.split(':').map(p => p.trim());
+                if (parts.length >= 2) {
+                    const h = parts[0].padStart(2, '0');
+                    const m = parts[1].padStart(2, '0');
+                    return `${h}:${m}`;
+                }
+                return timeStr;
+            }
+            // Compact form like '0830' or '830'
+            const compact = timeStr.replace(/[^0-9]/g, '');
+            if (/^\d{3,4}$/.test(compact)) {
+                const h = compact.slice(0, compact.length - 2).padStart(2, '0');
+                const m = compact.slice(-2);
+                return `${h}:${m}`;
+            }
+            return timeStr;
+        }
         
         // Form submissions
         document.getElementById('addRouteForm').addEventListener('submit', async (e) => {
@@ -839,7 +876,11 @@
             const busData = {
                 name: document.getElementById('busName').value,
                 number: document.getElementById('busNumber').value,
-                trackerId: document.getElementById('busTracker').value
+                trackerId: document.getElementById('busTracker').value,
+                operatingHours: {
+                    start: document.getElementById('busOpStart').value || null,
+                    end: document.getElementById('busOpEnd').value || null
+                }
             };
             
             try {
@@ -1085,19 +1126,27 @@
             try {
                 const response = await fetch('/api/buses');
                 buses = await response.json();
+                console.log('Loaded buses from /api/buses:', buses);
                 
                 const tbody = document.querySelector('#busesTable tbody');
-                tbody.innerHTML = buses.map(bus => `
+                tbody.innerHTML = buses.map(bus => {
+                    const startDisp = bus.operatingHours && bus.operatingHours.start ? formatTimeDisplay(bus.operatingHours.start) : null;
+                    const endDisp = bus.operatingHours && bus.operatingHours.end ? formatTimeDisplay(bus.operatingHours.end) : null;
+
+                    return `
                     <tr>
                         <td>${bus.name}</td>
+                        <td>${startDisp || 'Always'}</td>
+                        <td>${endDisp || 'Always'}</td>
                         <td>${bus.number}</td>
                         <td>${bus.trackerId || 'Not assigned'}</td>
                         <td>${new Date(bus.createdAt).toLocaleDateString()}</td>
                         <td class="actions">
+                            <button class="btn btn-primary" onclick="editBus('${bus.id}')">Edit</button>
                             <button class="btn btn-danger" onclick="deleteBus('${bus.id}')">Delete</button>
                         </td>
                     </tr>
-                `).join('');
+                `}).join('');
                 
                 updateBusSelects();
             } catch (error) {
@@ -1227,6 +1276,54 @@
                     loadAssignments();
                 } else {
                     showAlert('Error deleting bus', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function editBus(id) {
+            const bus = buses.find(b => b.id === id);
+            if (!bus) return;
+
+            const newName = prompt('Enter new bus name:', bus.name);
+            if (newName === null) return; // cancelled
+
+            const newNumber = prompt('Enter new bus number:', bus.number);
+            if (newNumber === null) return; // cancelled
+
+            const newTracker = prompt('Enter new tracker ID (leave blank to keep):', bus.trackerId || '');
+            if (newTracker === null) return; // cancelled
+
+            // Prompt for operating hours
+            const currentStart = bus.operatingHours && bus.operatingHours.start ? formatTimeDisplay(bus.operatingHours.start) : '';
+            const currentEnd = bus.operatingHours && bus.operatingHours.end ? formatTimeDisplay(bus.operatingHours.end) : '';
+
+            const newStart = prompt('Operating start time (HH:MM) — leave blank for Always:', currentStart);
+            if (newStart === null) return; // cancelled
+            const newEnd = prompt('Operating end time (HH:MM) — leave blank for Always:', currentEnd);
+            if (newEnd === null) return; // cancelled
+
+            const operatingHours = (newStart.trim() === '' || newEnd.trim() === '') ? null : { start: newStart.trim(), end: newEnd.trim() };
+
+            try {
+                const response = await fetch(`/api/buses/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: newName,
+                        number: newNumber,
+                        trackerId: newTracker || null,
+                        operatingHours: operatingHours
+                    })
+                });
+
+                if (response.ok) {
+                    showAlert('Bus updated successfully!');
+                    loadBuses();
+                    loadAssignments();
+                } else {
+                    showAlert('Error updating bus', 'error');
                 }
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');

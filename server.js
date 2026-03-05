@@ -74,6 +74,36 @@ function loadData() {
       busAssignments = data.busAssignments || {};
       busRouteAssignments = data.busRouteAssignments || {};
       manualNextStops = data.manualNextStops || {};
+      // Migrate any existing operatingHours to canonical 'HH:MM' format
+      try {
+        let migrated = false;
+        buses.forEach(b => {
+          if (b && b.operatingHours) {
+            const s = normalizeTimeFormat(b.operatingHours.start);
+            const e = normalizeTimeFormat(b.operatingHours.end);
+            if (s && e) {
+              if (b.operatingHours.start !== s || b.operatingHours.end !== e) {
+                b.operatingHours = { start: s, end: e };
+                migrated = true;
+              }
+            } else {
+              // Invalid or unparseable hours — clear to null
+              if (b.operatingHours !== null) {
+                b.operatingHours = null;
+                migrated = true;
+              }
+            }
+          }
+        });
+
+        if (migrated) {
+          dataChanged = true;
+          saveData();
+          console.log('🔧 Migrated operatingHours to canonical HH:MM format');
+        }
+      } catch (e) {
+        console.error('⚠️ Error migrating operatingHours:', e && e.message);
+      }
       console.log('✅ Loaded persisted data:', {
         routes: routes.length,
         stops: stops.length,
@@ -142,7 +172,28 @@ app.post('/owntracks', (req, res) => {
 
 // Get current bus locations
 app.get('/api/locations', (req, res) => {
-  res.json(busLocations);
+  // Only return trackers that are currently within their bus operating hours
+  const now = new Date();
+  const visibleLocations = {};
+
+  Object.keys(busLocations).forEach(trackerId => {
+    const location = busLocations[trackerId];
+    const busId = busAssignments[trackerId];
+
+    if (busId) {
+      const bus = buses.find(b => b.id === busId);
+      if (bus && bus.operatingHours) {
+        if (!isWithinOperatingHours(bus.operatingHours, now)) {
+          // skip this tracker — outside operating hours
+          return;
+        }
+      }
+    }
+
+    visibleLocations[trackerId] = location;
+  });
+
+  res.json(visibleLocations);
 });
 
 // Sample route data endpoint
@@ -349,12 +400,23 @@ app.get('/api/buses', (req, res) => {
 
 // Add a new bus
 app.post('/api/buses', basicAuth, (req, res) => {
-  const { name, number, trackerId } = req.body;
+  const { name, number, trackerId, operatingHours } = req.body;
+  // Normalize operatingHours to canonical 'HH:MM' format when provided
+  let storedOperatingHours = null;
+  if (operatingHours && (operatingHours.start || operatingHours.end)) {
+    const s = normalizeTimeFormat(operatingHours.start);
+    const e = normalizeTimeFormat(operatingHours.end);
+    if (s && e) {
+      storedOperatingHours = { start: s, end: e };
+    }
+  }
+
   const bus = {
     id: `bus-${Date.now()}`,
     name,
     number,
     trackerId,
+    operatingHours: storedOperatingHours, // { start: 'HH:MM', end: 'HH:MM' } or null
     createdAt: new Date().toISOString()
   };
   buses.push(bus);
@@ -370,7 +432,7 @@ app.post('/api/buses', basicAuth, (req, res) => {
 // Update a bus
 app.put('/api/buses/:id', basicAuth, (req, res) => {
   const { id } = req.params;
-  const { name, number, trackerId } = req.body;
+  const { name, number, trackerId, operatingHours } = req.body;
   const busIndex = buses.findIndex(b => b.id === id);
   
   if (busIndex === -1) {
@@ -382,11 +444,24 @@ app.put('/api/buses/:id', basicAuth, (req, res) => {
     delete busAssignments[buses[busIndex].trackerId];
   }
   
+  // Normalize operatingHours if provided (PUT with undefined means leave unchanged)
+  let newOperatingHours = buses[busIndex].operatingHours;
+  if (operatingHours !== undefined) {
+    if (operatingHours && (operatingHours.start || operatingHours.end)) {
+      const s = normalizeTimeFormat(operatingHours.start);
+      const e = normalizeTimeFormat(operatingHours.end);
+      newOperatingHours = s && e ? { start: s, end: e } : null;
+    } else {
+      newOperatingHours = null;
+    }
+  }
+
   buses[busIndex] = {
     ...buses[busIndex],
     name: name || buses[busIndex].name,
     number: number || buses[busIndex].number,
-    trackerId: trackerId || buses[busIndex].trackerId
+    trackerId: trackerId || buses[busIndex].trackerId,
+    operatingHours: newOperatingHours
   };
   
   // Add new tracker assignment
@@ -578,6 +653,66 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   
   return R * c; // Distance in meters
+}
+
+// Normalize and parse various time formats into canonical 'HH:MM' and minutes
+function normalizeTimeFormat(timeStr) {
+  if (!timeStr) return null;
+  if (typeof timeStr !== 'string') timeStr = String(timeStr);
+  // Trim whitespace
+  timeStr = timeStr.trim();
+
+  // If already contains colon, try to parse HH:MM
+  if (timeStr.includes(':')) {
+    const parts = timeStr.split(':').map(p => p.trim());
+    if (parts.length >= 2) {
+      const h = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      if (!Number.isNaN(h) && !Number.isNaN(m) && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      }
+    }
+    return null;
+  }
+
+  // Accept compact forms like '0830' or '830'
+  const compact = timeStr.replace(/[^0-9]/g, '');
+  if (/^\d{3,4}$/.test(compact)) {
+    const h = parseInt(compact.slice(0, compact.length - 2), 10);
+    const m = parseInt(compact.slice(-2), 10);
+    if (!Number.isNaN(h) && !Number.isNaN(m) && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+  }
+
+  return null;
+}
+
+function parseTimeToMinutes(timeStr) {
+  const normalized = normalizeTimeFormat(timeStr);
+  if (!normalized) return null;
+  const parts = normalized.split(':').map(Number);
+  return parts[0] * 60 + parts[1];
+}
+
+function isWithinOperatingHours(operatingHours, nowDate) {
+  if (!operatingHours || !operatingHours.start || !operatingHours.end) return true;
+
+  const startNorm = normalizeTimeFormat(operatingHours.start);
+  const endNorm = normalizeTimeFormat(operatingHours.end);
+  if (!startNorm || !endNorm) return true;
+
+  const startMin = parseTimeToMinutes(startNorm);
+  const endMin = parseTimeToMinutes(endNorm);
+  if (startMin === null || endMin === null) return true;
+  const currentMin = nowDate.getHours() * 60 + nowDate.getMinutes();
+
+  if (startMin <= endMin) {
+    return currentMin >= startMin && currentMin <= endMin;
+  } else {
+    // Overnight range (e.g., 22:00 - 04:00)
+    return currentMin >= startMin || currentMin <= endMin;
+  }
 }
 
 // Helper function to parse KML file (Google Maps exported routes)
@@ -797,11 +932,25 @@ app.get('/embed', (req, res) => {
 
 // Health check endpoint (for Railway/monitoring)
 app.get('/health', (req, res) => {
+  // Count only visible trackers (respecting operating hours)
+  const now = new Date();
+  let visibleCount = 0;
+  Object.keys(busLocations).forEach(trackerId => {
+    const busId = busAssignments[trackerId];
+    if (busId) {
+      const bus = buses.find(b => b.id === busId);
+      if (bus && bus.operatingHours && !isWithinOperatingHours(bus.operatingHours, now)) {
+        return; // not visible
+      }
+    }
+    visibleCount++;
+  });
+
   res.status(200).json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    buses: Object.keys(busLocations).length,
+    buses: visibleCount,
     routes: routes.length
   });
 });
@@ -813,24 +962,19 @@ app.get('/admin', basicAuth, (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`OpenTop Tracker server running on port ${PORT}`);
-  console.log(`Map available at: http://localhost:${PORT}`);
-  console.log(`Admin panel at: http://localhost:${PORT}/admin`);
-  console.log(`Embeddable map at: http://localhost:${PORT}/embed`);
-  console.log(`OwnTracks webhook endpoint: http://localhost:${PORT}/owntracks`);
-  console.log(`\n🔐 Admin credentials: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD === 'opentop123' ? ADMIN_PASSWORD + ' (default - change in production!)' : '***'}`);
-  console.log(`💚 Health check: http://localhost:${PORT}/health`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
 });
 
 // Graceful shutdown - save data on exit
 process.on('SIGINT', () => {
-  console.log('\n\n💾 Saving data before shutdown...');
+  console.log('\n\nSaving data before shutdown...');
   saveData();
-  console.log('✅ Data saved. Goodbye!');
+  console.log('Data saved. Goodbye!');
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  console.log('\n💾 Saving data before shutdown...');
+  console.log('\nSaving data before shutdown...');
   saveData();
   process.exit(0);
 });
