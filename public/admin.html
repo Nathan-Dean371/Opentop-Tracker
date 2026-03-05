@@ -1244,6 +1244,19 @@
                 const distance = Math.round(haversineMeters(startStop.lat, startStop.lon, firstStop.lat, firstStop.lon));
                 const etaSeconds = Math.max(5, Math.round(distance / (velocityKmh / 3.6)));
                 showAdminEtaBar(deviceId, `Next Stop: ${firstStop.name || 'Stop 1'}`, `${Math.floor(etaSeconds/60)}m ${etaSeconds%60}s`);
+                // publish to localStorage so other views (main map) can show the ETA pill
+                try {
+                    localStorage.setItem('adminTestBus', JSON.stringify({
+                        deviceId,
+                        stopName: firstStop.name || 'Stop 1',
+                        etaSeconds,
+                        lat: Number(startStop.lat),
+                        lon: Number(startStop.lon),
+                        timestamp: now
+                    }));
+                } catch(e) {
+                    console.warn('Unable to write admin test bus to localStorage', e);
+                }
             }
 
             document.getElementById('adminAddTestBusBtn').style.display = 'none';
@@ -1255,6 +1268,7 @@
             delete adminTestLocations[deviceId];
             if (adminBusMarkers[deviceId]) { map.removeLayer(adminBusMarkers[deviceId]); delete adminBusMarkers[deviceId]; }
             hideAdminEtaBar();
+            try { localStorage.removeItem('adminTestBus'); } catch(e) {}
             document.getElementById('adminAddTestBusBtn').style.display = 'inline-block';
             document.getElementById('adminRemoveTestBusBtn').style.display = 'none';
         }

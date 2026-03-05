@@ -545,6 +545,40 @@
             map.on && map.on('click', () => hideNextStopBar());
         }
 
+        // Listen for admin test bus events via localStorage so main view shows the ETA pill
+        window.addEventListener('storage', (ev) => {
+            if (ev.key !== 'adminTestBus') return;
+            if (!ev.newValue) {
+                // removed
+                hideNextStopBar();
+                try { if (busMarkers['ADMIN-TEST-1']) { map.removeLayer(busMarkers['ADMIN-TEST-1']); delete busMarkers['ADMIN-TEST-1']; } } catch(e){}
+                return;
+            }
+            try {
+                const payload = JSON.parse(ev.newValue);
+                const deviceId = payload.deviceId || 'ADMIN-TEST-1';
+                const stopName = payload.stopName || 'Next Stop';
+                const etaSeconds = payload.etaSeconds || null;
+
+                // Show ETA pill using existing helper. Pass an empty bus object so operating-hours check passes (no restrictions).
+                const etaData = { nextStop: { name: stopName, eta: etaSeconds, distance: payload.distance || 0 } };
+                showNextStopBar(deviceId, {}, etaData);
+
+                // Also place/update a marker for visibility
+                if (payload.lat && payload.lon) {
+                    const lat = Number(payload.lat);
+                    const lon = Number(payload.lon);
+                    if (busMarkers[deviceId]) {
+                        busMarkers[deviceId].setLatLng([lat, lon]);
+                    } else {
+                        busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon }).addTo(map).bindPopup(`<b>Admin Test Bus</b>`);
+                    }
+                }
+            } catch (error) {
+                console.warn('Invalid adminTestBus payload', error);
+            }
+        });
+
         // Set embed URL
         document.getElementById('embedUrl').textContent = window.location.origin + '/embed';
         
