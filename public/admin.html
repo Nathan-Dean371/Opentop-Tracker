@@ -29,7 +29,9 @@
             <button class="tab-button active" onclick="switchTab('routes')">Routes</button>
             <button class="tab-button" onclick="switchTab('stops')">Stops</button>
             <button class="tab-button" onclick="switchTab('buses')">Buses</button>
+            <button class="tab-button" onclick="switchTab('trackers')">Trackers</button>
             <button class="tab-button" onclick="switchTab('assignments')">Assignments</button>
+            <button class="tab-button" onclick="switchTab('embed')">Embed</button>
         </div>
         
         <!-- Routes Tab -->
@@ -260,6 +262,32 @@
                 </table>
             </div>
         </div>
+
+        <!-- Trackers Tab -->
+        <div id="trackers-tab" class="tab-content">
+            <div class="list-section">
+                <h3>Trackers</h3>
+                <p style="margin-bottom: 10px; color: #666;">
+                    Trackers represent OwnTracks devices (TID). Active trackers have sent data recently.
+                    Use this tab to link a tracker to a bus. A bus will only appear on the public map when
+                    it is created, assigned a tracker, and assigned to a route.
+                </p>
+                <table id="trackersTable">
+                    <thead>
+                        <tr>
+                            <th>Tracker ID</th>
+                            <th>Status</th>
+                            <th>Last Seen</th>
+                            <th>Age</th>
+                            <th>Current Bus</th>
+                            <th>Assign to Bus</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
         
         <!-- Assignments Tab -->
         <div id="assignments-tab" class="tab-content">
@@ -318,6 +346,27 @@
                 </form>
             </div>
         </div>
+
+        <!-- Embed Tab -->
+        <div id="embed-tab" class="tab-content">
+            <div class="form-section">
+                <h3>Embed This Map</h3>
+                <p style="margin-bottom: 10px; color: #666;">
+                    Use this URL or iframe code to embed the live tracker map on your own website.
+                </p>
+                <div class="form-group">
+                    <label for="adminEmbedUrl">Embed URL</label>
+                    <input type="text" id="adminEmbedUrl" readonly onclick="this.select();">
+                </div>
+                <div class="form-group">
+                    <label for="adminEmbedCode">Iframe Embed Code</label>
+                    <textarea id="adminEmbedCode" rows="3" readonly onclick="this.select();"></textarea>
+                </div>
+                <p style="margin-top: 10px; font-size: 12px; color: #666;">
+                    The embed view is served from <code>/embed</code> and is optimized to fill the entire iframe area.
+                </p>
+            </div>
+        </div>
     </div>
     
     <script src="/leaflet/leaflet.js"></script>
@@ -325,12 +374,55 @@
         // Global variables
         let map, stopMap;
         let routeCoordinates = [];
-        let currentRouteLayer = null;
-        let stopMarker = null;
+        let currentRouteLayer = null; // in-progress route being drawn
+        let existingRouteLayers = []; // saved routes previewed on the admin map
+        let stopMarker = null;        // single marker for the stop form
+        let existingStopMarkers = []; // preview markers for all saved stops
         let routes = [];
         let stops = [];
         let buses = [];
         let assignments = {};
+        let trackers = [];
+
+        // Shared color + icon helpers (keep admin previews consistent with main map)
+        const routeThemeColors = ['#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316'];
+        const stopIconCache = new Map();
+
+        function hashString(value) {
+            return String(value || '')
+                .split('')
+                .reduce((hash, character) => ((hash << 5) - hash) + character.charCodeAt(0), 0);
+        }
+
+        function getRouteThemeColor(route, fallbackIndex = 0) {
+            if (route && route.color) return route.color;
+            const hash = Math.abs(hashString(route?.id || route?.name || fallbackIndex));
+            return routeThemeColors[hash % routeThemeColors.length];
+        }
+
+        function getStopIcon(color) {
+            if (stopIconCache.has(color)) {
+                return stopIconCache.get(color);
+            }
+
+            const icon = L.icon({
+                iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
+                        <circle cx="20" cy="20" r="17" fill="rgba(15, 23, 42, 0.10)" />
+                        <circle cx="20" cy="20" r="16" fill="${color}" />
+                        <circle cx="20" cy="20" r="11" fill="white" opacity="0.96" />
+                        <circle cx="20" cy="20" r="5" fill="${color}" />
+                        <circle cx="20" cy="20" r="16" fill="none" stroke="white" stroke-width="2" />
+                    </svg>
+                `),
+                iconSize: [40, 40],
+            iconAnchor: [20, 20],
+            popupAnchor: [0, -18]
+            });
+
+            stopIconCache.set(color, icon);
+            return icon;
+        }
         
         // Initialize maps
         function initializeMaps() {
@@ -371,6 +463,10 @@
             
             event.target.classList.add('active');
             document.getElementById(tabName + '-tab').classList.add('active');
+            
+            if (tabName === 'trackers') {
+                loadTrackers();
+            }
             
             // Refresh map sizes
             setTimeout(() => {
@@ -644,6 +740,7 @@
                     showAlert('Bus added successfully!');
                     e.target.reset();
                     loadBuses();
+                    loadTrackers();
                 } else {
                     showAlert('Error adding bus', 'error');
                 }
@@ -806,6 +903,7 @@
                 }).join('');
                 
                 updateRouteSelects();
+                updateAdminRoutePreview();
             } catch (error) {
                 console.error('Error loading routes:', error);
             }
@@ -818,8 +916,53 @@
                 
                 updateStopFilterOptions();
                 filterStops();
+                updateAdminStopsPreview();
             } catch (error) {
                 console.error('Error loading stops:', error);
+            }
+        }
+
+        // Render all saved routes on the admin preview map
+        function updateAdminRoutePreview() {
+            if (!map) return;
+
+            // Remove any existing saved route layers (keep the in-progress route layer)
+            existingRouteLayers.forEach(layer => map.removeLayer(layer));
+            existingRouteLayers = [];
+
+            if (!routes || routes.length === 0) return;
+
+            const visibleRoutes = routes.filter(r => r.coordinates && r.coordinates.length && r.visible !== false);
+            if (visibleRoutes.length === 0) return;
+
+            let combinedBounds = null;
+
+            visibleRoutes.forEach((route, index) => {
+                const color = getRouteThemeColor(route, index);
+                const outerRail = L.polyline(route.coordinates, {
+                    color: color,
+                    weight: 11,
+                    opacity: 0.14,
+                    lineCap: 'round',
+                    lineJoin: 'round'
+                });
+                const mainRail = L.polyline(route.coordinates, {
+                    color: color,
+                    weight: 5,
+                    opacity: 0.92,
+                    lineCap: 'round',
+                    lineJoin: 'round'
+                });
+                const group = L.layerGroup([outerRail, mainRail]).addTo(map);
+                existingRouteLayers.push(group);
+
+                const bounds = mainRail.getBounds();
+                combinedBounds = combinedBounds ? combinedBounds.extend(bounds) : bounds;
+            });
+
+            // Only adjust view if we're not currently drawing a new route
+            if (routeCoordinates.length === 0 && combinedBounds) {
+                map.fitBounds(combinedBounds, { padding: [20, 20] });
             }
         }
         
@@ -838,6 +981,62 @@
             `;
             
             filterSelect.value = currentValue;
+        }
+
+        // Render all saved stops on the Stop Location map
+        function updateAdminStopsPreview() {
+            if (!stopMap) return;
+
+            // Clear existing preview markers (keep the single form marker)
+            existingStopMarkers.forEach(m => stopMap.removeLayer(m));
+            existingStopMarkers = [];
+
+            if (!stops || stops.length === 0) return;
+
+            const bounds = [];
+
+            stops.forEach(stop => {
+                const route = routes.find(r => r.id === stop.routeId);
+                // Respect route visibility; show unassigned stops regardless
+                if (route && route.visible === false) return;
+
+                const color = getRouteThemeColor(route || stop, stop.order || 0);
+                const safeId = String(stop.id).replace(/'/g, "\\'");
+                const marker = L.marker([stop.lat, stop.lon], { icon: getStopIcon(color) })
+                    .addTo(stopMap)
+                    .bindPopup(`
+                        <b>${stop.name}</b><br>
+                        Route: ${route ? route.name : 'N/A'}<br>
+                        Stop #${stop.order}<br>
+                        <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
+                            <button type="button" class="btn btn-primary btn-small" onclick="editStop('${safeId}')">Edit</button>
+                            <button type="button" class="btn btn-danger btn-small" onclick="deleteStop('${safeId}')">Delete</button>
+                        </div>
+                    `);
+
+                marker.on('click', () => {
+                    // When clicking a stop, populate the form + highlight location
+                    document.getElementById('stopName').value = stop.name;
+                    document.getElementById('stopLat').value = stop.lat.toFixed(6);
+                    document.getElementById('stopLon').value = stop.lon.toFixed(6);
+                    if (stop.routeId) {
+                        document.getElementById('stopRoute').value = stop.routeId;
+                    }
+
+                    if (stopMarker) {
+                        stopMap.removeLayer(stopMarker);
+                    }
+                    stopMarker = L.marker([stop.lat, stop.lon]).addTo(stopMap);
+                    stopMap.setView([stop.lat, stop.lon], 15);
+                });
+
+                existingStopMarkers.push(marker);
+                bounds.push([stop.lat, stop.lon]);
+            });
+
+            if (bounds.length) {
+                stopMap.fitBounds(bounds, { padding: [20, 20] });
+            }
         }
         
         function filterStops() {
@@ -899,6 +1098,8 @@
                 `}).join('');
                 
                 updateBusSelects();
+                // Keep trackers view in sync with latest bus metadata
+                renderTrackersTable();
             } catch (error) {
                 console.error('Error loading buses:', error);
             }
@@ -926,6 +1127,82 @@
             } catch (error) {
                 console.error('Error loading assignments:', error);
             }
+        }
+
+        // Trackers: load and render
+        async function loadTrackers() {
+            try {
+                const response = await fetch('/api/trackers');
+
+                const contentType = response.headers.get('content-type') || '';
+
+                // If the endpoint is missing or returns HTML (e.g., "Cannot GET /api/trackers"),
+                // avoid JSON parsing errors and just treat it as "no trackers" for the UI.
+                if (!response.ok || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    console.warn('Trackers API is not returning JSON. Status:', response.status, 'Body:', text);
+                    trackers = [];
+                    renderTrackersTable();
+                    return;
+                }
+
+                trackers = await response.json();
+                renderTrackersTable();
+            } catch (error) {
+                console.error('Error loading trackers:', error);
+            }
+        }
+
+        function renderTrackersTable() {
+            const tbody = document.querySelector('#trackersTable tbody');
+            if (!tbody) return;
+
+            if (!trackers || trackers.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="7" style="text-align:center; color:#666;">No trackers seen yet. Send data from OwnTracks to populate this list.</td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = trackers.map(tracker => {
+                const statusLabel = tracker.status === 'active' ? 'Active' : 'Inactive';
+                const statusClass = tracker.status === 'active' ? 'status active' : 'status inactive';
+                const lastSeen = tracker.lastSeen ? new Date(tracker.lastSeen).toLocaleString() : 'Never';
+                const ageText = tracker.ageSeconds != null ? `${tracker.ageSeconds}s ago` : '—';
+                const busLabel = tracker.busName
+                    ? `${tracker.busName}${tracker.busNumber ? ` (${tracker.busNumber})` : ''}`
+                    : 'Not assigned';
+
+                const busOptions = buses.map(bus => `
+                    <option value="${bus.id}" ${bus.id === tracker.busId ? 'selected' : ''}>
+                        ${bus.name} (${bus.number})
+                    </option>
+                `).join('');
+
+                const selectId = `trackerBusSelect-${tracker.trackerId}`;
+
+                return `
+                    <tr>
+                        <td>${tracker.trackerId}</td>
+                        <td><span class="${statusClass}">${statusLabel}</span></td>
+                        <td>${lastSeen}</td>
+                        <td>${ageText}</td>
+                        <td>${busLabel}</td>
+                        <td>
+                            <select id="${selectId}" class="tracker-bus-select">
+                                <option value="">Unassigned</option>
+                                ${busOptions}
+                            </select>
+                        </td>
+                        <td class="actions">
+                            <button class="btn btn-primary" onclick="assignTrackerToBus('${tracker.trackerId}')">Assign</button>
+                            <button class="btn btn-secondary" onclick="clearTrackerAssignment('${tracker.trackerId}')">Clear</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         // --- Admin test-bus helpers (admin-only) ---
@@ -1126,6 +1403,7 @@
                     showAlert('Bus deleted successfully!');
                     loadBuses();
                     loadAssignments();
+                    loadTrackers();
                 } else {
                     showAlert('Error deleting bus', 'error');
                 }
@@ -1174,6 +1452,7 @@
                     showAlert('Bus updated successfully!');
                     loadBuses();
                     loadAssignments();
+                    loadTrackers();
                 } else {
                     showAlert('Error updating bus', 'error');
                 }
@@ -1429,6 +1708,61 @@
             }
         }
         
+        // Tracker assignment helpers
+        async function assignTrackerToBus(trackerId) {
+            const select = document.getElementById(`trackerBusSelect-${trackerId}`);
+            if (!select) {
+                showAlert('Unable to find tracker row in table', 'error');
+                return;
+            }
+
+            const busId = select.value || null;
+
+            try {
+                const response = await fetch(`/api/trackers/${encodeURIComponent(trackerId)}/assign-bus`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ busId })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showAlert(result.message || 'Tracker assignment updated!', 'success');
+                    await loadBuses();
+                    await loadTrackers();
+                    await loadAssignments();
+                } else {
+                    showAlert(result.error || 'Error assigning tracker to bus', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function clearTrackerAssignment(trackerId) {
+            try {
+                const response = await fetch(`/api/trackers/${encodeURIComponent(trackerId)}/assign-bus`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ busId: null })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showAlert(result.message || 'Tracker unassigned successfully!', 'success');
+                    await loadBuses();
+                    await loadTrackers();
+                    await loadAssignments();
+                } else {
+                    showAlert(result.error || 'Error clearing tracker assignment', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+        
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             initializeMaps();
@@ -1436,6 +1770,17 @@
             loadStops();
             loadBuses();
             loadAssignments();
+            loadTrackers();
+
+            // Populate embed URL + code for the Embed tab
+            const origin = window.location.origin;
+            const embedUrl = origin + '/embed';
+            const urlInput = document.getElementById('adminEmbedUrl');
+            const codeTextarea = document.getElementById('adminEmbedCode');
+            if (urlInput) urlInput.value = embedUrl;
+            if (codeTextarea) {
+                codeTextarea.value = `<iframe src="${embedUrl}" width="800" height="600" frameborder="0"></iframe>`;
+            }
 
             // wire admin test bus buttons
             const addBtn = document.getElementById('adminAddTestBusBtn');

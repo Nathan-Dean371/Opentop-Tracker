@@ -329,21 +329,30 @@
                         Updated: ${age}s ago
                     `;
                     
-                    if (etaData && etaData.nextStop) {
-                        const { nextStop } = etaData;
-                        popupContent += `<br><br><b>Next Stop:</b>`;
-                        if (nextStop.isManualOverride) {
-                            popupContent += ` <span style="color: #ff9800; font-size: 11px;">(Manual)</span>`;
-                        }
-                        popupContent += `<br>`;
-                        popupContent += `${nextStop.name}<br>`;
-                        popupContent += `Distance: ${nextStop.distance}m<br>`;
-                        if (nextStop.eta !== null) {
-                            const etaMinutes = Math.floor(nextStop.eta / 60);
-                            const etaSeconds = nextStop.eta % 60;
-                            popupContent += `ETA: ${etaMinutes}m ${etaSeconds}s`;
-                        } else {
-                            popupContent += `ETA: Calculating...`;
+                    if (etaData) {
+                        if (etaData.serviceState === 'waiting' && etaData.nextRun) {
+                            const nextRun = etaData.nextRun;
+                            popupContent += `<br><br><b>Next Run:</b><br>`;
+                            popupContent += `${nextRun.time || '—'}<br>`;
+                            if (nextRun.secondsUntil != null) {
+                                popupContent += `Starts in: ${formatShortDuration(nextRun.secondsUntil)}`;
+                            }
+                        } else if (etaData.nextStop) {
+                            const { nextStop } = etaData;
+                            popupContent += `<br><br><b>Next Stop:</b>`;
+                            if (nextStop.isManualOverride) {
+                                popupContent += ` <span style="color: #ff9800; font-size: 11px;">(Manual)</span>`;
+                            }
+                            popupContent += `<br>`;
+                            popupContent += `${nextStop.name}<br>`;
+                            popupContent += `Distance: ${nextStop.distance}m<br>`;
+                            if (nextStop.eta !== null) {
+                                const etaMinutes = Math.floor(nextStop.eta / 60);
+                                const etaSeconds = nextStop.eta % 60;
+                                popupContent += `ETA: ${etaMinutes}m ${etaSeconds}s`;
+                            } else {
+                                popupContent += `ETA: Calculating...`;
+                            }
                         }
                     }
                     
@@ -380,27 +389,44 @@
                         </div>
                     `;
                     
-                    if (etaData && etaData.nextStop) {
-                        const { nextStop } = etaData;
-                        cardHTML += `<div class="bus-card__section">`;
-                        cardHTML += `<div class="bus-card__section-title">Next Stop</div>`;
-                        cardHTML += `<div class="bus-card__row">`;
-                        cardHTML += `<span class="bus-card__label">Stop</span>`;
-                        cardHTML += `<span class="bus-card__value">${nextStop.name}`;
-                        if (nextStop.isManualOverride) {
-                            cardHTML += ` <span class="bus-card__note">(Manual)</span>`;
+                    if (etaData) {
+                        if (etaData.serviceState === 'waiting' && etaData.nextRun) {
+                            const nextRun = etaData.nextRun;
+                            cardHTML += `<div class="bus-card__section">`;
+                            cardHTML += `<div class="bus-card__section-title">Next Run</div>`;
+                            cardHTML += `<div class="bus-card__row">`;
+                            cardHTML += `<span class="bus-card__label">Departure</span>`;
+                            cardHTML += `<span class="bus-card__value">${nextRun.time || '—'}</span>`;
+                            cardHTML += `</div>`;
+                            if (nextRun.secondsUntil != null) {
+                                cardHTML += `<div class="bus-card__row">`;
+                                cardHTML += `<span class="bus-card__label">Starts In</span>`;
+                                cardHTML += `<span class="bus-card__value">${formatShortDuration(nextRun.secondsUntil)}</span>`;
+                                cardHTML += `</div>`;
+                            }
+                            cardHTML += `</div>`;
+                        } else if (etaData.nextStop) {
+                            const { nextStop } = etaData;
+                            cardHTML += `<div class="bus-card__section">`;
+                            cardHTML += `<div class="bus-card__section-title">Next Stop</div>`;
+                            cardHTML += `<div class="bus-card__row">`;
+                            cardHTML += `<span class="bus-card__label">Stop</span>`;
+                            cardHTML += `<span class="bus-card__value">${nextStop.name}`;
+                            if (nextStop.isManualOverride) {
+                                cardHTML += ` <span class="bus-card__note">(Manual)</span>`;
+                            }
+                            cardHTML += `</span></div>`;
+                            cardHTML += `<div class="bus-card__row">`;
+                            cardHTML += `<span class="bus-card__label">Distance</span>`;
+                            cardHTML += `<span class="bus-card__value">${nextStop.distance}m</span>`;
+                            cardHTML += `</div>`;
+                            if (nextStop.eta !== null) {
+                                const etaMinutes = Math.floor(nextStop.eta / 60);
+                                const etaSeconds = nextStop.eta % 60;
+                                cardHTML += `<div class="bus-card__row"><span class="bus-card__label">ETA</span><span class="bus-card__value">${etaMinutes}m ${etaSeconds}s</span></div>`;
+                            }
+                            cardHTML += `</div>`;
                         }
-                        cardHTML += `</span></div>`;
-                        cardHTML += `<div class="bus-card__row">`;
-                        cardHTML += `<span class="bus-card__label">Distance</span>`;
-                        cardHTML += `<span class="bus-card__value">${nextStop.distance}m</span>`;
-                        cardHTML += `</div>`;
-                        if (nextStop.eta !== null) {
-                            const etaMinutes = Math.floor(nextStop.eta / 60);
-                            const etaSeconds = nextStop.eta % 60;
-                            cardHTML += `<div class="bus-card__row"><span class="bus-card__label">ETA</span><span class="bus-card__value">${etaMinutes}m ${etaSeconds}s</span></div>`;
-                        }
-                        cardHTML += `</div>`;
                     }
                     
                     // Update existing card or create new one
@@ -475,6 +501,15 @@
             return `${secs}s`;
         }
 
+        function formatShortDuration(seconds) {
+            if (seconds == null) return '—';
+            const s = Math.max(0, Math.round(seconds));
+            const mins = Math.floor(s / 60);
+            const secs = s % 60;
+            if (mins > 0) return `${mins}m ${secs}s`;
+            return `${secs}s`;
+        }
+
         function showNextStopBar(deviceId, bus, etaData) {
             if (!isWithinOperatingHours(bus)) {
                 // Do not show bar if outside operating hours
@@ -482,15 +517,28 @@
                 return;
             }
 
+            const serviceState = etaData && etaData.serviceState ? etaData.serviceState : 'en_route';
             const nextStop = etaData && etaData.nextStop ? etaData.nextStop : null;
-            const name = nextStop ? nextStop.name : 'No next stop';
-            const etaText = nextStop ? formatEtaFromNextStop(nextStop) : '—';
+            const nextRun = etaData && etaData.nextRun ? etaData.nextRun : null;
 
-            const left = document.getElementById('etaLeft');
+            const leftLabel = document.getElementById('etaLeftLabel');
             const stopNameEl = document.getElementById('etaStopName');
-            const right = document.getElementById('etaRight');
-            stopNameEl.textContent = name;
-            right.textContent = etaText;
+            const rightLabel = document.getElementById('etaRightLabel');
+            const rightValue = document.getElementById('etaRightValue');
+
+            if (serviceState === 'waiting' && nextRun) {
+                leftLabel.textContent = 'Next Run:';
+                rightLabel.textContent = 'Starts in:';
+                stopNameEl.textContent = nextRun.time || '—';
+                rightValue.textContent = formatShortDuration(nextRun.secondsUntil);
+            } else {
+                leftLabel.textContent = 'Next Stop:';
+                rightLabel.textContent = 'ETA:';
+                const name = nextStop ? nextStop.name : 'No next stop';
+                const etaText = nextStop ? formatEtaFromNextStop(nextStop) : '—';
+                stopNameEl.textContent = name;
+                rightValue.textContent = etaText;
+            }
             document.getElementById('etaBarWrapper').style.display = 'flex';
         }
 
@@ -564,8 +612,8 @@
     <!-- ETA bar (created/filled via JS) -->
     <div id="etaBarWrapper" class="eta-bar-wrapper" style="display:none;">
         <div id="etaBar" class="eta-bar" role="status">
-            <div class="eta-left" id="etaLeft">Next Stop: <span id="etaStopName" style="margin-left:12px; font-weight:800;"></span></div>
-            <div class="eta-right" id="etaRight">ETA: —</div>
+            <div class="eta-left" id="etaLeft"><span id="etaLeftLabel">Next Stop:</span> <span id="etaStopName" style="margin-left:12px; font-weight:800;"></span></div>
+            <div class="eta-right" id="etaRight"><span id="etaRightLabel">ETA:</span> <span id="etaRightValue">—</span></div>
             <div id="etaClose" class="eta-close" title="Close">✕</div>
         </div>
     </div>

@@ -62,6 +62,21 @@ let buses = [];
 let busAssignments = {}; // Maps tracker ID to bus ID
 let busRouteAssignments = {}; // Maps bus ID to route ID
 let manualNextStops = {}; // Maps bus ID to manually set next stop ID
+let busNextStopState = {}; // Maps bus ID to last computed next stop ID (for monotonic progression)
+
+// Fixed daily departure times (first-stop departures) in local time
+// Used to determine "next run" when the bus is waiting at the start.
+const FIXED_DEPARTURE_TIMES_MINUTES = [
+  parseTimeToMinutes('09:30'),
+  parseTimeToMinutes('11:00'),
+  parseTimeToMinutes('12:30'),
+  parseTimeToMinutes('14:00'),
+  parseTimeToMinutes('15:30')
+].filter(v => v !== null).sort((a, b) => a - b);
+
+const START_WAIT_RADIUS_METERS = 60; // how close to first stop counts as "at start"
+const STOPPED_SPEED_KMH_THRESHOLD = 2; // below this is treated as stopped
+const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "reached"
 
 // Load persisted data on startup
 function loadData() {
@@ -180,14 +195,27 @@ app.get('/api/locations', (req, res) => {
     const location = busLocations[trackerId];
     const busId = busAssignments[trackerId];
 
-    if (busId) {
-      const bus = buses.find(b => b.id === busId);
-      if (bus && bus.operatingHours) {
-        if (!isWithinOperatingHours(bus.operatingHours, now)) {
-          // skip this tracker — outside operating hours
-          return;
-        }
-      }
+    // Only show trackers that are assigned to a bus AND that bus
+    // is assigned to a route. This ensures a tracker that is merely
+    // sending data never causes a bus to appear on the public view
+    // page unless the full configuration is in place.
+    if (!busId) {
+      return;
+    }
+
+    const bus = buses.find(b => b.id === busId);
+    if (!bus) {
+      return;
+    }
+
+    const routeId = busRouteAssignments[busId];
+    if (!routeId) {
+      return;
+    }
+
+    if (bus.operatingHours && !isWithinOperatingHours(bus.operatingHours, now)) {
+      // Skip this tracker — outside operating hours
+      return;
     }
 
     visibleLocations[trackerId] = location;
@@ -495,6 +523,47 @@ app.delete('/api/buses/:id', basicAuth, (req, res) => {
   res.status(204).send();
 });
 
+// List trackers (derived from live locations and saved assignments)
+app.get('/api/trackers', (req, res) => {
+  const trackerSet = new Set([
+    ...Object.keys(busLocations),
+    ...Object.keys(busAssignments)
+  ]);
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const trackers = [];
+
+  trackerSet.forEach(trackerId => {
+    const loc = busLocations[trackerId];
+    const busId = busAssignments[trackerId] || null;
+    const bus = busId ? buses.find(b => b.id === busId) : null;
+
+    let status = 'inactive';
+    let lastSeen = null;
+    let ageSeconds = null;
+
+    if (loc && loc.timestamp) {
+      ageSeconds = nowSeconds - loc.timestamp;
+      lastSeen = new Date(loc.timestamp * 1000).toISOString();
+      if (ageSeconds < 300) {
+        status = 'active';
+      }
+    }
+
+    trackers.push({
+      trackerId,
+      status,
+      lastSeen,
+      ageSeconds,
+      busId,
+      busName: bus ? bus.name : null,
+      busNumber: bus ? bus.number : null
+    });
+  });
+
+  res.json(trackers);
+});
+
 // Assign bus to route
 app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
   const { busId } = req.params;
@@ -513,6 +582,45 @@ app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
   busRouteAssignments[busId] = routeId;
   dataChanged = true;
   res.json({ busId, routeId, message: 'Bus assigned to route successfully' });
+});
+
+// Assign or clear a tracker->bus link from the trackers tab
+app.post('/api/trackers/:trackerId/assign-bus', basicAuth, (req, res) => {
+  const { trackerId } = req.params;
+  const { busId } = req.body;
+
+  // Allow clearing the assignment entirely
+  if (!busId) {
+    // Clear mapping
+    delete busAssignments[trackerId];
+    // Clear trackerId from any buses that reference it
+    buses.forEach(b => {
+      if (b.trackerId === trackerId) {
+        b.trackerId = null;
+      }
+    });
+    dataChanged = true;
+    return res.json({ trackerId, busId: null, message: 'Tracker unassigned from all buses' });
+  }
+
+  const bus = buses.find(b => b.id === busId);
+  if (!bus) {
+    return res.status(404).json({ error: 'Bus not found' });
+  }
+
+  // Clear this tracker from any other buses to keep a 1:1 mapping
+  buses.forEach(b => {
+    if (b.id !== busId && b.trackerId === trackerId) {
+      b.trackerId = null;
+    }
+  });
+
+  // Update primary mapping and bus record
+  busAssignments[trackerId] = busId;
+  bus.trackerId = trackerId;
+
+  dataChanged = true;
+  res.json({ trackerId, busId, message: 'Tracker assigned to bus successfully' });
 });
 
 // Set manual next stop for a bus (for testing)
@@ -552,90 +660,179 @@ app.get('/api/assignments', (req, res) => {
   });
 });
 
-// Calculate ETA to next stop
+// Calculate ETA to next stop or "next run" if waiting at the start
 app.get('/api/eta/:trackerId', (req, res) => {
   const { trackerId } = req.params;
-  
+
   const busId = busAssignments[trackerId];
   if (!busId) {
     return res.status(404).json({ error: 'Tracker not assigned to any bus' });
   }
-  
+
   const routeId = busRouteAssignments[busId];
   if (!routeId) {
     return res.status(404).json({ error: 'Bus not assigned to any route' });
   }
-  
+
   const busLocation = busLocations[trackerId];
   if (!busLocation) {
     return res.status(404).json({ error: 'No location data for this tracker' });
   }
-  
+
   const routeStops = stops
     .filter(s => s.routeId === routeId)
     .sort((a, b) => a.order - b.order);
-  
+
   if (routeStops.length === 0) {
     return res.status(404).json({ error: 'No stops defined for this route' });
   }
-  
-  // Check for manual next stop override
+
+  // Check for manual next stop override first
   let nextStop = null;
-  let minDistance = Infinity;
   let isManualOverride = false;
-  
+
   if (manualNextStops[busId]) {
-    // Use manually set next stop
-    nextStop = routeStops.find(s => s.id === manualNextStops[busId]);
-    if (nextStop) {
-      minDistance = calculateDistance(
-        busLocation.lat,
-        busLocation.lon,
-        nextStop.lat,
-        nextStop.lon
-      );
+    const manual = routeStops.find(s => s.id === manualNextStops[busId]);
+    if (manual) {
+      nextStop = manual;
       isManualOverride = true;
+      // Clear any automatic progression state while manual override is active
+      delete busNextStopState[busId];
     }
   }
-  
-  // If no manual override or manual stop not found, find next stop based on distance
+
+  const firstStop = routeStops[0];
+
+  // Determine current speed (km/h) and m/s once
+  const speedKmh = busLocation.velocity || 0; // OwnTracks sends velocity in km/h
+  const speedMs = speedKmh / 3.6;
+
+  // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
-    routeStops.forEach(stop => {
-      const distance = calculateDistance(
-        busLocation.lat,
-        busLocation.lon,
-        stop.lat,
-        stop.lon
-      );
-      
-      if (distance < minDistance) {
-        minDistance = distance;
-        nextStop = stop;
-      }
-    });
+    let targetStop = null;
+
+    // Reuse last target if still valid
+    if (busNextStopState[busId]) {
+      targetStop = routeStops.find(s => s.id === busNextStopState[busId]) || null;
+    }
+
+    // If we have no valid target yet, start with the geographically nearest stop
+    if (!targetStop) {
+      let nearestStop = null;
+      let nearestDistance = Infinity;
+
+      routeStops.forEach(stop => {
+        const distance = calculateDistance(
+          busLocation.lat,
+          busLocation.lon,
+          stop.lat,
+          stop.lon
+        );
+
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestStop = stop;
+        }
+      });
+
+      targetStop = nearestStop || firstStop;
+    }
+
+    // Check if we've effectively "arrived" at the target stop; if so, advance
+    // to the next stop in sequence (looping), but never skip more than one.
+    const distanceToTarget = calculateDistance(
+      busLocation.lat,
+      busLocation.lon,
+      targetStop.lat,
+      targetStop.lon
+    );
+
+    if (distanceToTarget <= ARRIVAL_RADIUS_METERS) {
+      const currentIndex = routeStops.findIndex(s => s.id === targetStop.id);
+      const nextIndex = (currentIndex + 1) % routeStops.length;
+      targetStop = routeStops[nextIndex];
+    }
+
+    busNextStopState[busId] = targetStop.id;
+    nextStop = targetStop;
   }
-  
-  // Calculate ETA based on current speed and distance
-  const speedKmh = busLocation.velocity || 0; // km/h (OwnTracks sends velocity in km/h)
-  const speedMs = speedKmh / 3.6; // Convert to m/s for distance calculations
+
+  // Distance is always measured to the computed "next" stop
+  const distanceToNext = calculateDistance(
+    busLocation.lat,
+    busLocation.lon,
+    nextStop.lat,
+    nextStop.lon
+  );
+
+  // Default: bus is considered "en route" to the next stop
   let eta = null;
-  
   if (speedMs > 0) {
-    eta = Math.round(minDistance / speedMs); // seconds
+    eta = Math.round(distanceToNext / speedMs); // seconds
   }
-  
+
+  let serviceState = 'en_route';
+  let nextRun = null;
+
+  // Timetable-based "waiting at start" detection only applies when there is
+  // no manual override in effect.
+  if (!isManualOverride && FIXED_DEPARTURE_TIMES_MINUTES.length > 0) {
+    const distanceToFirst = calculateDistance(
+      busLocation.lat,
+      busLocation.lon,
+      firstStop.lat,
+      firstStop.lon
+    );
+
+    const isNearStart = distanceToFirst <= START_WAIT_RADIUS_METERS;
+    const isStopped = speedKmh < STOPPED_SPEED_KMH_THRESHOLD;
+
+    // Find the next departure time (today) in minutes since midnight
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    let nextDepartureMinutes = null;
+    for (const dep of FIXED_DEPARTURE_TIMES_MINUTES) {
+      if (dep >= nowMinutes) {
+        nextDepartureMinutes = dep;
+        break;
+      }
+    }
+
+    if (nextDepartureMinutes !== null) {
+      const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const departureTime = new Date(todayMidnight.getTime() + nextDepartureMinutes * 60000);
+      const secondsUntil = Math.max(0, Math.round((departureTime.getTime() - now.getTime()) / 1000));
+
+      // Only switch to "waiting" mode if the bus is effectively parked at the
+      // start stop and there is an upcoming departure.
+      if (isNearStart && isStopped) {
+        serviceState = 'waiting';
+        eta = null; // we use nextRun.secondsUntil on the client instead
+        nextRun = {
+          time: minutesToHHMM(nextDepartureMinutes),
+          secondsUntil
+        };
+      }
+    } else {
+      // No more departures today
+      serviceState = 'finished';
+    }
+  }
+
   res.json({
     trackerId,
     busId,
     routeId,
     nextStop: {
       ...nextStop,
-      distance: Math.round(minDistance),
+      distance: Math.round(distanceToNext),
       eta: eta,
       isManualOverride
     },
     currentSpeed: speedKmh ? speedKmh.toFixed(1) : '0', // km/h (already in km/h from OwnTracks)
-    allStops: routeStops
+    allStops: routeStops,
+    serviceState,
+    nextRun
   });
 });
 
@@ -653,6 +850,15 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   
   return R * c; // Distance in meters
+}
+
+function minutesToHHMM(totalMinutes) {
+  if (totalMinutes == null || Number.isNaN(totalMinutes)) return null;
+  const minutesInDay = 24 * 60;
+  const normalized = ((totalMinutes % minutesInDay) + minutesInDay) % minutesInDay;
+  const h = Math.floor(normalized / 60);
+  const m = normalized % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 // Normalize and parse various time formats into canonical 'HH:MM' and minutes
@@ -937,12 +1143,24 @@ app.get('/health', (req, res) => {
   let visibleCount = 0;
   Object.keys(busLocations).forEach(trackerId => {
     const busId = busAssignments[trackerId];
-    if (busId) {
-      const bus = buses.find(b => b.id === busId);
-      if (bus && bus.operatingHours && !isWithinOperatingHours(bus.operatingHours, now)) {
-        return; // not visible
-      }
+    if (!busId) {
+      return;
     }
+
+    const bus = buses.find(b => b.id === busId);
+    if (!bus) {
+      return;
+    }
+
+    const routeId = busRouteAssignments[busId];
+    if (!routeId) {
+      return;
+    }
+
+    if (bus.operatingHours && !isWithinOperatingHours(bus.operatingHours, now)) {
+      return; // not visible
+    }
+
     visibleCount++;
   });
 
