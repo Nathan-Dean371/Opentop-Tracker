@@ -710,36 +710,39 @@ app.get('/api/eta/:trackerId', (req, res) => {
   // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
     let targetStop = null;
-
-    // Reuse last target if still valid
-    if (busNextStopState[busId]) {
-      targetStop = routeStops.find(s => s.id === busNextStopState[busId]) || null;
-    }
-
-    // If we have no valid target yet, start with the geographically nearest stop
-    if (!targetStop) {
-      let nearestStop = null;
-      let nearestDistance = Infinity;
-
-      routeStops.forEach(stop => {
-        const distance = calculateDistance(
-          busLocation.lat,
-          busLocation.lon,
-          stop.lat,
-          stop.lon
-        );
-
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
+ 
+    // Get the last known next stop for this bus
+    const lastNextStopId = busNextStopState[busId];
+    const lastNextStop = routeStops.find(s => s.id === lastNextStopId);
+ 
+    if (lastNextStop) {
+      // If we have a valid last-known stop, check if we've arrived.
+      const distanceToLast = calculateDistance(busLocation.lat, busLocation.lon, lastNextStop.lat, lastNextStop.lon);
+ 
+      if (distanceToLast <= ARRIVAL_RADIUS_METERS) {
+        // We've arrived. Advance to the next stop in the sequence.
+        const currentIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
+        const nextIndex = (currentIndex + 1) % routeStops.length;
+        targetStop = routeStops[nextIndex];
+      } else {
+        // Still on the way to the last-known stop.
+        targetStop = lastNextStop;
+      }
+    } else {
+      // No state, so find the geographically nearest stop as a starting point.
+      let nearestStop = routeStops[0];
+      let minDistance = Infinity;
+      for (const stop of routeStops) {
+        const dist = calculateDistance(busLocation.lat, busLocation.lon, stop.lat, stop.lon);
+        if (dist < minDistance) {
+          minDistance = dist;
           nearestStop = stop;
         }
-      });
-
-      targetStop = nearestStop || firstStop;
+      }
+      targetStop = nearestStop;
     }
-
-    // Check if we've effectively "arrived" at the target stop; if so, advance
-    // to the next stop in sequence (looping), but never skip more than one.
+ 
+    // Check for arrival at the *newly determined* target stop, in case the bus is sitting on top of it.
     const distanceToTarget = calculateDistance(
       busLocation.lat,
       busLocation.lon,
@@ -747,7 +750,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
       targetStop.lon
     );
 
-    if (distanceToTarget <= ARRIVAL_RADIUS_METERS) {
+    if (distanceToTarget <= ARRIVAL_RADIUS_METERS && speedKmh < STOPPED_SPEED_KMH_THRESHOLD) {
       const currentIndex = routeStops.findIndex(s => s.id === targetStop.id);
       const nextIndex = (currentIndex + 1) % routeStops.length;
       targetStop = routeStops[nextIndex];
