@@ -49,11 +49,58 @@
             background: #f44336;
             color: white;
         }
+
+        #info-cards {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            right: 10px;
+            z-index: 1000;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            pointer-events: none; /* Allow map interaction underneath */
+        }
+
+        .info-card {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            min-width: 220px;
+            pointer-events: auto; /* Re-enable pointer events for the card */
+            border: 1px solid #eee;
+        }
+
+        .info-card b {
+            font-size: 16px;
+        }
+
+        .info-card .details {
+            margin-top: 5px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2px 10px;
+            font-size: 12px;
+            color: #333;
+        }
+
+        .info-card .eta-info {
+            margin-top: 8px;
+            font-size: 12px;
+        }
+
+        .info-card .eta-info b {
+            font-size: 12px;
+        }
     </style>
     <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
     <div id="map"></div>
+    <div id="info-cards"></div>
     
     <script src="/leaflet/leaflet.js"></script>
     <script>
@@ -236,6 +283,9 @@
                 const response = await fetch('/api/locations');
                 const locations = await response.json();
                 
+                const infoCardsContainer = document.getElementById('info-cards');
+                infoCardsContainer.innerHTML = ''; // Clear existing cards
+
                 for (const [deviceId, location] of Object.entries(locations)) {
                     const { lat, lon, timestamp, battery, velocity } = location;
                     
@@ -318,6 +368,48 @@
                     }
                     
                     busMarkers[deviceId].bindPopup(popupContent);
+
+                    // Create and update info card
+                    const infoCard = document.createElement('div');
+                    infoCard.className = 'info-card';
+                    let infoCardContent = `
+                        <b>${busName}</b> <span class="status ${statusClass}">${statusText}</span>
+                        <div class="details">
+                            <span><b>Speed:</b> ${velocity ? velocity.toFixed(1) : 'N/A'} km/h</span>
+                            <span><b>Battery:</b> ${battery || 'N/A'}%</span>
+                        </div>
+                    `;
+
+                    if (etaData) {
+                        infoCardContent += `<div class="eta-info">`;
+                        if (etaData.serviceState === 'waiting' && etaData.nextRun) {
+                            const nextRun = etaData.nextRun;
+                            const formatShortDuration = (seconds) => {
+                                if (seconds == null) return '—';
+                                const s = Math.max(0, Math.round(seconds));
+                                const mins = Math.floor(s / 60);
+                                const secs = s % 60;
+                                if (mins > 0) return `${mins}m ${secs}s`;
+                                return `${secs}s`;
+                            };
+                            infoCardContent += `<b>Next Run:</b> ${nextRun.time || '—'}<br>`;
+                            if (nextRun.secondsUntil != null) {
+                                infoCardContent += `Starts in: ${formatShortDuration(nextRun.secondsUntil)}`;
+                            }
+                        } else if (etaData.nextStop) {
+                            const { nextStop } = etaData;
+                            const etaMinutes = nextStop.eta !== null ? Math.floor(nextStop.eta / 60) : null;
+                            const etaSeconds = nextStop.eta !== null ? nextStop.eta % 60 : null;
+                            const etaString = etaMinutes !== null ? `${etaMinutes}m ${etaSeconds}s` : 'Calculating...';
+
+                            infoCardContent += `<b>Next Stop:</b> ${nextStop.name}<br>`;
+                            infoCardContent += `<b>ETA:</b> ${etaString} (${nextStop.distance}m)`;
+                        }
+                        infoCardContent += `</div>`;
+                    }
+
+                    infoCard.innerHTML = infoCardContent;
+                    infoCardsContainer.appendChild(infoCard);
                 }
             } catch (error) {
                 console.error('Error updating bus locations:', error);
