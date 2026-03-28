@@ -687,25 +687,36 @@ app.get('/api/eta/:trackerId', (req, res) => {
     return res.status(404).json({ error: 'No stops defined for this route' });
   }
 
+  // Determine current speed (km/h) and m/s once
+  const speedKmh = busLocation.velocity || 0; // OwnTracks sends velocity in km/h
+  const speedMs = speedKmh / 3.6;
+
   // Check for manual next stop override first
   let nextStop = null;
   let isManualOverride = false;
 
   if (manualNextStops[busId]) {
     const manual = routeStops.find(s => s.id === manualNextStops[busId]);
-    if (manual) {
+    const distanceToManual = manual ? calculateDistance(busLocation.lat, busLocation.lon, manual.lat, manual.lon) : Infinity;
+
+    // Check if we have arrived at the manually set stop.
+    if (manual && distanceToManual <= ARRIVAL_RADIUS_METERS && speedKmh < STOPPED_SPEED_KMH_THRESHOLD) {
+      // We've arrived. Clear the manual override and let automatic progression take over.
+      delete manualNextStops[busId];
+      dataChanged = true; // Ensure the change is saved
+      nextStop = null; // Allow automatic logic to run
+      isManualOverride = false;
+      console.log(`✅ Bus ${busId} arrived at manual stop ${manual.id}. Reverting to automatic progression.`);
+    } else if (manual) {
+      // Manual override is active and we have not arrived yet.
       nextStop = manual;
       isManualOverride = true;
-      // Clear any automatic progression state while manual override is active
-      delete busNextStopState[busId];
+      // Clear any automatic progression state while manual override is active.
+      delete busNextStopState[busId]; // This ensures the next automatic step starts fresh.
     }
   }
 
   const firstStop = routeStops[0];
-
-  // Determine current speed (km/h) and m/s once
-  const speedKmh = busLocation.velocity || 0; // OwnTracks sends velocity in km/h
-  const speedMs = speedKmh / 3.6;
 
   // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
