@@ -1197,8 +1197,8 @@
                             </select>
                         </td>
                         <td class="actions">
-                            <button class="btn btn-primary" onclick="assignTrackerToBus('${tracker.trackerId}')">Assign</button>
-                            <button class="btn btn-secondary" onclick="clearTrackerAssignment('${tracker.trackerId}')">Clear</button>
+                            <button class="btn btn-primary" onclick="assignTrackerToBus('${tracker.trackerId.replace(/'/g, "\\'")}')">Assign</button>
+                            <button class="btn btn-secondary" onclick="clearTrackerAssignment('${tracker.trackerId.replace(/'/g, "\\'")}')">Clear</button>
                         </td>
                     </tr>
                 `;
@@ -1710,7 +1710,7 @@
         
         // Tracker assignment helpers
         async function assignTrackerToBus(trackerId) {
-            const select = document.getElementById(`trackerBusSelect-${trackerId}`);
+            const select = document.querySelector(`[id=${JSON.stringify("trackerBusSelect-" + trackerId)}]`);
             if (!select) {
                 showAlert('Unable to find tracker row in table', 'error');
                 return;

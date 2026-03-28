@@ -741,16 +741,21 @@ app.get('/api/eta/:trackerId', (req, res) => {
       }
     } else {
       // No state, so find the geographically nearest stop as a starting point.
-      let nearestStop = routeStops[0];
+      let nearestStop = null;
       let minDistance = Infinity;
+
       for (const stop of routeStops) {
         const dist = calculateDistance(busLocation.lat, busLocation.lon, stop.lat, stop.lon);
-        if (dist < minDistance) {
+        // Ensure the distance is a valid number before comparing
+        if (!isNaN(dist) && dist < minDistance) {
           minDistance = dist;
           nearestStop = stop;
         }
       }
-      targetStop = nearestStop;
+      
+      // If a nearest stop was found, use it. Otherwise, default to the first stop of the route.
+      // This prevents errors if all distance calculations failed.
+      targetStop = nearestStop || routeStops[0];
     }
  
     // Check for arrival at the *newly determined* target stop, in case the bus is sitting on top of it.

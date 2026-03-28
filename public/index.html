@@ -121,6 +121,30 @@
             iconAnchor: [20, 20],
             popupAnchor: [0, -20]
         });
+
+        function animateMarker(marker, to, duration) {
+            const start = performance.now();
+            const from = marker.getLatLng();
+
+            if (marker._animationFrameId) {
+                cancelAnimationFrame(marker._animationFrameId);
+            }
+
+            function frame(currentTime) {
+                const elapsed = currentTime - start;
+                const progress = Math.min(elapsed / duration, 1);
+
+                const lat = from.lat + (to.lat - from.lat) * progress;
+                const lng = from.lng + (to.lng - from.lng) * progress;
+
+                marker.setLatLng([lat, lng]);
+
+                if (progress < 1) {
+                    marker._animationFrameId = requestAnimationFrame(frame);
+                }
+            }
+            marker._animationFrameId = requestAnimationFrame(frame);
+        }
         
         // Custom stop icon
         const stopIcon = L.icon({
@@ -229,7 +253,7 @@
         // Get ETA for a tracker
         async function getETA(trackerId) {
             try {
-                const response = await fetch(`/api/eta/${trackerId}`);
+                const response = await fetch(`/api/eta/${encodeURIComponent(trackerId)}`);
                 if (response.ok) {
                     return await response.json();
                 }
@@ -282,7 +306,8 @@
                     
                     // Update or create marker
                     if (busMarkers[deviceId]) {
-                        busMarkers[deviceId].setLatLng([lat, lon]);
+                        const to = L.latLng(lat, lon);
+                        animateMarker(busMarkers[deviceId], to, 4900); // Animate over 4.9 seconds
                     } else {
                         const marker = L.marker([lat, lon], { icon: busIcon })
                             .addTo(map)

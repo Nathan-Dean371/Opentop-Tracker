@@ -151,16 +151,39 @@
                     </svg>
                 `),
                 iconSize: [40, 40],
-                iconAnchor: [20, 20],
-                popupAnchor: [0, -18]
-            });
-
-            stopIconCache.set(color, icon);
-            return icon;
-        }
-        
-        // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)
-        const busIcon = L.icon({
+                            iconAnchor: [20, 20],
+                            popupAnchor: [0, -18]
+                            });
+                
+                            stopIconCache.set(color, icon);
+                            return icon;
+                        }
+                
+                        function animateMarker(marker, to, duration) {
+                            const start = performance.now();
+                            const from = marker.getLatLng();
+                
+                            if (marker._animationFrameId) {
+                                cancelAnimationFrame(marker._animationFrameId);
+                            }
+                
+                            function frame(currentTime) {
+                                const elapsed = currentTime - start;
+                                const progress = Math.min(elapsed / duration, 1);
+                
+                                const lat = from.lat + (to.lat - from.lat) * progress;
+                                const lng = from.lng + (to.lng - from.lng) * progress;
+                
+                                marker.setLatLng([lat, lng]);
+                
+                                if (progress < 1) {
+                                    marker._animationFrameId = requestAnimationFrame(frame);
+                                }
+                            }
+                            marker._animationFrameId = requestAnimationFrame(frame);
+                        }
+                        
+                        // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)        const busIcon = L.icon({
             iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
                     <circle cx="12" cy="12" r="11" fill="#FF5722" stroke="white" stroke-width="2"/>
@@ -266,7 +289,7 @@
         // Get ETA
         async function getETA(trackerId) {
             try {
-                const response = await fetch(`/api/eta/${trackerId}`);
+                const response = await fetch(`/api/eta/${encodeURIComponent(trackerId)}`);
                 if (response.ok) {
                     return await response.json();
                 }
@@ -295,7 +318,8 @@
                     
                     // Update or create marker
                     if (busMarkers[deviceId]) {
-                        busMarkers[deviceId].setLatLng([lat, lon]);
+                        const to = L.latLng(lat, lon);
+                        animateMarker(busMarkers[deviceId], to, 4900); // Animate over 4.9 seconds
                     } else {
                         busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon })
                             .addTo(map);
