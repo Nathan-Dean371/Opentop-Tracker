@@ -365,8 +365,11 @@
                             const formatShortDuration = (seconds) => {
                                 if (seconds == null) return '—';
                                 const s = Math.max(0, Math.round(seconds));
-                                const mins = Math.floor(s / 60);
+                                const hours = Math.floor(s / 3600);
+                                const mins = Math.floor((s % 3600) / 60);
                                 const secs = s % 60;
+                                
+                                if (hours > 0) return `${hours}h ${mins}m`;
                                 if (mins > 0) return `${mins}m ${secs}s`;
                                 return `${secs}s`;
                             };
@@ -414,8 +417,11 @@
                             const formatShortDuration = (seconds) => {
                                 if (seconds == null) return '—';
                                 const s = Math.max(0, Math.round(seconds));
-                                const mins = Math.floor(s / 60);
+                                const hours = Math.floor(s / 3600);
+                                const mins = Math.floor((s % 3600) / 60);
                                 const secs = s % 60;
+                                
+                                if (hours > 0) return `${hours}h ${mins}m`;
                                 if (mins > 0) return `${mins}m ${secs}s`;
                                 return `${secs}s`;
                             };
