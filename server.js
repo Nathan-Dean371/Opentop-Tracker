@@ -782,7 +782,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
     }
   }
 
-  const firstStop = routeStops[0];
+  const firstStop = getRouteStartStop(routeStops, route);
 
   // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
@@ -1009,6 +1009,15 @@ function getPreviousStopIndex(routeStops, currentIndex, route) {
 
   if (currentIndex <= terminalStartIndex) return terminalStartIndex;
   return currentIndex - 1;
+}
+
+function getRouteStartStop(routeStops, route) {
+  if (!routeStops || routeStops.length === 0) return null;
+  if (route && route.startStopId) {
+    const configuredStart = routeStops.find(s => s.id === route.startStopId);
+    if (configuredStart) return configuredStart;
+  }
+  return routeStops[0];
 }
 
 // Helper function to calculate distance between two points (Haversine formula)
