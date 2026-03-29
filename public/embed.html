@@ -161,7 +161,15 @@
             return icon;
         }
                 
-                        function animateMarker(marker, to, duration) {
+                        function calculateSecondsUntil(departureMinutes) {
+            if (departureMinutes == null) return null;
+            const now = new Date();
+            const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const departureTime = new Date(todayMidnight.getTime() + departureMinutes * 60000);
+            return Math.max(0, Math.round((departureTime.getTime() - now.getTime()) / 1000));
+        }
+
+        function animateMarker(marker, to, duration) {
                             const start = performance.now();
                             const from = marker.getLatLng();
                 
@@ -375,8 +383,9 @@
                             };
                             popupContent += `<br><br><b>Next Run:</b><br>`;
                             popupContent += `${nextRun.time || '—'}<br>`;
-                            if (nextRun.secondsUntil != null) {
-                                popupContent += `Starts in: ${formatShortDuration(nextRun.secondsUntil)}`;
+                            if (nextRun.departureMinutes != null) {
+                                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
+                                popupContent += `Starts in: ${formatShortDuration(secondsUntil)}`;
                             }
                         } else if (etaData.nextStop) {
                             const { nextStop } = etaData;
@@ -426,8 +435,9 @@
                                 return `${secs}s`;
                             };
                             infoCardContent += `<b>Next Run:</b> ${nextRun.time || '—'}<br>`;
-                            if (nextRun.secondsUntil != null) {
-                                infoCardContent += `Starts in: ${formatShortDuration(nextRun.secondsUntil)}`;
+                            if (nextRun.departureMinutes != null) {
+                                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
+                                infoCardContent += `Starts in: ${formatShortDuration(secondsUntil)}`;
                             }
                         } else if (etaData.nextStop) {
                             const { nextStop } = etaData;

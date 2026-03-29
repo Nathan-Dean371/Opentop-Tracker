@@ -359,8 +359,9 @@
                             const nextRun = etaData.nextRun;
                             popupContent += `<br><br><b>Next Run:</b><br>`;
                             popupContent += `${nextRun.time || '—'}<br>`;
-                            if (nextRun.secondsUntil != null) {
-                                popupContent += `Starts in: ${formatShortDuration(nextRun.secondsUntil)}`;
+                            if (nextRun.departureMinutes != null) {
+                                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
+                                popupContent += `Starts in: ${formatShortDuration(secondsUntil)}`;
                             }
                         } else if (etaData.nextStop) {
                             const { nextStop } = etaData;
@@ -423,10 +424,11 @@
                             cardHTML += `<span class="bus-card__label">Departure</span>`;
                             cardHTML += `<span class="bus-card__value">${nextRun.time || '—'}</span>`;
                             cardHTML += `</div>`;
-                            if (nextRun.secondsUntil != null) {
+                            if (nextRun.departureMinutes != null) {
+                                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
                                 cardHTML += `<div class="bus-card__row">`;
                                 cardHTML += `<span class="bus-card__label">Starts In</span>`;
-                                cardHTML += `<span class="bus-card__value">${formatShortDuration(nextRun.secondsUntil)}</span>`;
+                                cardHTML += `<span class="bus-card__value">${formatShortDuration(secondsUntil)}</span>`;
                                 cardHTML += `</div>`;
                             }
                             cardHTML += `</div>`;
@@ -538,6 +540,14 @@
             return `${secs}s`;
         }
 
+        function calculateSecondsUntil(departureMinutes) {
+            if (departureMinutes == null) return null;
+            const now = new Date();
+            const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const departureTime = new Date(todayMidnight.getTime() + departureMinutes * 60000);
+            return Math.max(0, Math.round((departureTime.getTime() - now.getTime()) / 1000));
+        }
+
         function showNextStopBar(deviceId, bus, etaData) {
             if (!isWithinOperatingHours(bus)) {
                 // Do not show bar if outside operating hours
@@ -558,7 +568,8 @@
                 leftLabel.textContent = 'Next Run:';
                 rightLabel.textContent = 'Starts in:';
                 stopNameEl.textContent = nextRun.time || '—';
-                rightValue.textContent = formatShortDuration(nextRun.secondsUntil);
+                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
+                rightValue.textContent = formatShortDuration(secondsUntil);
             } else {
                 leftLabel.textContent = 'Next Stop:';
                 rightLabel.textContent = 'ETA:';

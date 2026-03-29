@@ -829,7 +829,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
         eta = null; // we use nextRun.secondsUntil on the client instead
         nextRun = {
           time: minutesToHHMM(nextDepartureMinutes),
-          secondsUntil
+          departureMinutes: nextDepartureMinutes
         };
       }
     } else {
