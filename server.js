@@ -62,7 +62,7 @@ let buses = [];
 let busAssignments = {}; // Maps tracker ID to bus ID
 let busRouteAssignments = {}; // Maps bus ID to route ID
 let manualNextStops = {}; // Maps bus ID to manually set next stop ID
-let busNextStopState = {}; // Maps bus ID to last computed next stop ID (for monotonic progression)
+let busNextStopState = {}; // Maps bus ID to next-stop progression state
 
 // Fixed daily departure times (first-stop departures) in local time
 // Used to determine "next run" when the bus is waiting at the start.
@@ -77,6 +77,8 @@ const FIXED_DEPARTURE_TIMES_MINUTES = [
 const START_WAIT_RADIUS_METERS = 60; // how close to first stop counts as "at start"
 const STOPPED_SPEED_KMH_THRESHOLD = 2; // below this is treated as stopped
 const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "reached"
+const MOVING_AWAY_DELTA_METERS = 25; // minimum distance increase to treat as moving away
+const MOVING_AWAY_MIN_CONSECUTIVE = 2; // consecutive checks before auto-advancing a stale stop
 
 // Load persisted data on startup
 function loadData() {
@@ -517,6 +519,8 @@ app.delete('/api/buses/:id', basicAuth, (req, res) => {
   
   // Remove route assignment
   delete busRouteAssignments[id];
+  delete manualNextStops[id];
+  delete busNextStopState[id];
   
   buses.splice(busIndex, 1);
   dataChanged = true;
@@ -580,6 +584,8 @@ app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
   }
   
   busRouteAssignments[busId] = routeId;
+  delete manualNextStops[busId];
+  delete busNextStopState[busId];
   dataChanged = true;
   res.json({ busId, routeId, message: 'Bus assigned to route successfully' });
 });
@@ -588,11 +594,16 @@ app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
 app.post('/api/trackers/:trackerId/assign-bus', basicAuth, (req, res) => {
   const { trackerId } = req.params;
   const { busId } = req.body;
+  const previouslyAssignedBusId = busAssignments[trackerId] || null;
 
   // Allow clearing the assignment entirely
   if (!busId) {
     // Clear mapping
     delete busAssignments[trackerId];
+    if (previouslyAssignedBusId) {
+      delete manualNextStops[previouslyAssignedBusId];
+      delete busNextStopState[previouslyAssignedBusId];
+    }
     // Clear trackerId from any buses that reference it
     buses.forEach(b => {
       if (b.trackerId === trackerId) {
@@ -618,6 +629,12 @@ app.post('/api/trackers/:trackerId/assign-bus', basicAuth, (req, res) => {
   // Update primary mapping and bus record
   busAssignments[trackerId] = busId;
   bus.trackerId = trackerId;
+  if (previouslyAssignedBusId && previouslyAssignedBusId !== busId) {
+    delete manualNextStops[previouslyAssignedBusId];
+    delete busNextStopState[previouslyAssignedBusId];
+  }
+  delete manualNextStops[busId];
+  delete busNextStopState[busId];
 
   dataChanged = true;
   res.json({ trackerId, busId, message: 'Tracker assigned to bus successfully' });
@@ -721,23 +738,39 @@ app.get('/api/eta/:trackerId', (req, res) => {
   // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
     let targetStop = null;
+    let movingAwayCount = 0;
  
-    // Get the last known next stop for this bus
-    const lastNextStopId = busNextStopState[busId];
+    // Get the last known next stop state for this bus.
+    // Backward-compatible with previous string-only state format.
+    const lastState = busNextStopState[busId];
+    const lastNextStopId = typeof lastState === 'string' ? lastState : lastState && lastState.nextStopId;
+    const lastDistanceToStop = typeof lastState === 'object' ? lastState.lastDistanceToStop : null;
+    const lastMovingAwayCount = typeof lastState === 'object' ? (lastState.movingAwayCount || 0) : 0;
     const lastNextStop = routeStops.find(s => s.id === lastNextStopId);
  
     if (lastNextStop) {
       // If we have a valid last-known stop, check if we've arrived.
       const distanceToLast = calculateDistance(busLocation.lat, busLocation.lon, lastNextStop.lat, lastNextStop.lon);
+      const isMovingAwayFromLast =
+        lastDistanceToStop != null &&
+        speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
+        distanceToLast > lastDistanceToStop + MOVING_AWAY_DELTA_METERS;
  
       if (distanceToLast <= ARRIVAL_RADIUS_METERS) {
         // We've arrived. Advance to the next stop in the sequence.
         const currentIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
         const nextIndex = (currentIndex + 1) % routeStops.length;
         targetStop = routeStops[nextIndex];
+      } else if (isMovingAwayFromLast && lastMovingAwayCount + 1 >= MOVING_AWAY_MIN_CONSECUTIVE) {
+        // Bus is consistently moving away from the tracked next stop.
+        // Treat that stop as passed and advance to avoid getting stuck.
+        const currentIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
+        const nextIndex = (currentIndex + 1) % routeStops.length;
+        targetStop = routeStops[nextIndex];
       } else {
         // Still on the way to the last-known stop.
         targetStop = lastNextStop;
+        movingAwayCount = isMovingAwayFromLast ? lastMovingAwayCount + 1 : 0;
       }
     } else {
       // No state, so find the geographically nearest stop as a starting point.
@@ -759,7 +792,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
     }
  
     // Check for arrival at the *newly determined* target stop, in case the bus is sitting on top of it.
-    const distanceToTarget = calculateDistance(
+    let distanceToTarget = calculateDistance(
       busLocation.lat,
       busLocation.lon,
       targetStop.lat,
@@ -770,9 +803,21 @@ app.get('/api/eta/:trackerId', (req, res) => {
       const currentIndex = routeStops.findIndex(s => s.id === targetStop.id);
       const nextIndex = (currentIndex + 1) % routeStops.length;
       targetStop = routeStops[nextIndex];
+      distanceToTarget = calculateDistance(
+        busLocation.lat,
+        busLocation.lon,
+        targetStop.lat,
+        targetStop.lon
+      );
+      movingAwayCount = 0;
     }
 
-    busNextStopState[busId] = targetStop.id;
+    busNextStopState[busId] = {
+      nextStopId: targetStop.id,
+      lastDistanceToStop: Math.round(distanceToTarget),
+      movingAwayCount,
+      updatedAt: Date.now()
+    };
     nextStop = targetStop;
   }
 
@@ -783,6 +828,15 @@ app.get('/api/eta/:trackerId', (req, res) => {
     nextStop.lat,
     nextStop.lon
   );
+
+  const nextStopIndex = routeStops.findIndex(s => s.id === nextStop.id);
+  const currentStopIndex = nextStopIndex >= 0
+    ? (nextStopIndex - 1 + routeStops.length) % routeStops.length
+    : -1;
+  const currentStop = currentStopIndex >= 0 ? routeStops[currentStopIndex] : null;
+  const distanceToCurrent = currentStop
+    ? calculateDistance(busLocation.lat, busLocation.lon, currentStop.lat, currentStop.lon)
+    : null;
 
   // Default: bus is considered "en route" to the next stop
   let eta = null;
@@ -842,11 +896,19 @@ app.get('/api/eta/:trackerId', (req, res) => {
     trackerId,
     busId,
     routeId,
+    currentStop: currentStop
+      ? {
+          ...currentStop,
+          distance: Math.round(distanceToCurrent),
+          stopNumber: currentStop.order
+        }
+      : null,
     nextStop: {
       ...nextStop,
       distance: Math.round(distanceToNext),
       eta: eta,
-      isManualOverride
+      isManualOverride,
+      stopNumber: nextStop.order
     },
     currentSpeed: speedKmh ? speedKmh.toFixed(1) : '0', // km/h (already in km/h from OwnTracks)
     allStops: routeStops,
