@@ -153,13 +153,13 @@
                     </svg>
                 `),
                 iconSize: [40, 40],
-                            iconAnchor: [20, 20],
-                            popupAnchor: [0, -18]
-                            });
-                
-                            stopIconCache.set(color, icon);
-                            return icon;
-                        }
+                iconAnchor: [20, 20],
+                popupAnchor: [0, -18]
+            });
+        
+            stopIconCache.set(color, icon);
+            return icon;
+        }
                 
                         function animateMarker(marker, to, duration) {
                             const start = performance.now();
@@ -185,7 +185,8 @@
                             marker._animationFrameId = requestAnimationFrame(frame);
                         }
                         
-                        // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)        const busIcon = L.icon({
+        // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)
+        const busIcon = L.icon({
             iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
                     <circle cx="12" cy="12" r="11" fill="#FF5722" stroke="white" stroke-width="2"/>
