@@ -360,7 +360,7 @@
                             popupContent += `<br><br><b>Next Run:</b><br>`;
                             popupContent += `${nextRun.time || '—'}<br>`;
                             if (nextRun.departureMinutes != null) {
-                                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
+                                const secondsUntil = getSecondsUntilNextRun(nextRun);
                                 popupContent += `Starts in: ${formatShortDuration(secondsUntil)}`;
                             }
                         } else if (etaData.nextStop) {
@@ -425,7 +425,7 @@
                             cardHTML += `<span class="bus-card__value">${nextRun.time || '—'}</span>`;
                             cardHTML += `</div>`;
                             if (nextRun.departureMinutes != null) {
-                                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
+                                const secondsUntil = getSecondsUntilNextRun(nextRun);
                                 cardHTML += `<div class="bus-card__row">`;
                                 cardHTML += `<span class="bus-card__label">Starts In</span>`;
                                 cardHTML += `<span class="bus-card__value">${formatShortDuration(secondsUntil)}</span>`;
@@ -548,6 +548,12 @@
             return Math.max(0, Math.round((departureTime.getTime() - now.getTime()) / 1000));
         }
 
+        function getSecondsUntilNextRun(nextRun) {
+            if (!nextRun) return null;
+            if (typeof nextRun.secondsUntil === 'number') return nextRun.secondsUntil;
+            return calculateSecondsUntil(nextRun.departureMinutes);
+        }
+
         function showNextStopBar(deviceId, bus, etaData) {
             if (!isWithinOperatingHours(bus)) {
                 // Do not show bar if outside operating hours
@@ -568,7 +574,7 @@
                 leftLabel.textContent = 'Next Run:';
                 rightLabel.textContent = 'Starts in:';
                 stopNameEl.textContent = nextRun.time || '—';
-                const secondsUntil = calculateSecondsUntil(nextRun.departureMinutes);
+                const secondsUntil = getSecondsUntilNextRun(nextRun);
                 rightValue.textContent = formatShortDuration(secondsUntil);
             } else {
                 leftLabel.textContent = 'Next Stop:';

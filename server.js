@@ -46,6 +46,7 @@ app.use('/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/di
 // Data file path - use Railway volume if available, otherwise current directory
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
+const SERVICE_TIME_ZONE = process.env.SERVICE_TIME_ZONE || 'Europe/Dublin';
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -190,7 +191,6 @@ app.post('/owntracks', (req, res) => {
 // Get current bus locations
 app.get('/api/locations', (req, res) => {
   // Only return trackers that are currently within their bus operating hours
-  const now = new Date();
   const visibleLocations = {};
 
   Object.keys(busLocations).forEach(trackerId => {
@@ -215,7 +215,7 @@ app.get('/api/locations', (req, res) => {
       return;
     }
 
-    if (bus.operatingHours && !isWithinOperatingHours(bus.operatingHours, now)) {
+    if (bus.operatingHours && !isWithinOperatingHours(bus.operatingHours)) {
       // Skip this tracker — outside operating hours
       return;
     }
@@ -908,7 +908,8 @@ app.get('/api/eta/:trackerId', (req, res) => {
 
     // Find the next departure time (today) in minutes since midnight
     const now = new Date();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowMinutes = getMinutesInTimeZone(now, SERVICE_TIME_ZONE);
+    const nowSeconds = getSecondsSinceMidnightInTimeZone(now, SERVICE_TIME_ZONE);
     let nextDepartureMinutes = null;
     for (const dep of FIXED_DEPARTURE_TIMES_MINUTES) {
       if (dep > nowMinutes) {
@@ -918,9 +919,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
     }
 
     if (nextDepartureMinutes !== null) {
-      const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const departureTime = new Date(todayMidnight.getTime() + nextDepartureMinutes * 60000);
-      const secondsUntil = Math.max(0, Math.round((departureTime.getTime() - now.getTime()) / 1000));
+      const secondsUntil = Math.max(0, (nextDepartureMinutes * 60) - nowSeconds);
 
       // Only switch to "waiting" mode if the bus is effectively parked at the
       // start stop and there is an upcoming departure.
@@ -929,7 +928,9 @@ app.get('/api/eta/:trackerId', (req, res) => {
         eta = null; // we use nextRun.secondsUntil on the client instead
         nextRun = {
           time: minutesToHHMM(nextDepartureMinutes),
-          departureMinutes: nextDepartureMinutes
+          departureMinutes: nextDepartureMinutes,
+          secondsUntil,
+          timeZone: SERVICE_TIME_ZONE
         };
       }
     } else {
@@ -1095,7 +1096,8 @@ function isWithinOperatingHours(operatingHours, nowDate) {
   const startMin = parseTimeToMinutes(startNorm);
   const endMin = parseTimeToMinutes(endNorm);
   if (startMin === null || endMin === null) return true;
-  const currentMin = nowDate.getHours() * 60 + nowDate.getMinutes();
+  const referenceDate = nowDate || new Date();
+  const currentMin = getMinutesInTimeZone(referenceDate, SERVICE_TIME_ZONE);
 
   if (startMin <= endMin) {
     return currentMin >= startMin && currentMin <= endMin;
@@ -1103,6 +1105,38 @@ function isWithinOperatingHours(operatingHours, nowDate) {
     // Overnight range (e.g., 22:00 - 04:00)
     return currentMin >= startMin || currentMin <= endMin;
   }
+}
+
+function getDateTimePartsInTimeZone(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+
+  const parts = formatter.formatToParts(date);
+  const out = {};
+  for (const part of parts) {
+    if (part.type !== 'literal') {
+      out[part.type] = Number(part.value);
+    }
+  }
+  return out;
+}
+
+function getMinutesInTimeZone(date, timeZone) {
+  const parts = getDateTimePartsInTimeZone(date, timeZone);
+  return (parts.hour || 0) * 60 + (parts.minute || 0);
+}
+
+function getSecondsSinceMidnightInTimeZone(date, timeZone) {
+  const parts = getDateTimePartsInTimeZone(date, timeZone);
+  return ((parts.hour || 0) * 60 * 60) + ((parts.minute || 0) * 60) + (parts.second || 0);
 }
 
 // Helper function to parse KML file (Google Maps exported routes)
@@ -1323,7 +1357,6 @@ app.get('/embed', (req, res) => {
 // Health check endpoint (for Railway/monitoring)
 app.get('/health', (req, res) => {
   // Count only visible trackers (respecting operating hours)
-  const now = new Date();
   let visibleCount = 0;
   Object.keys(busLocations).forEach(trackerId => {
     const busId = busAssignments[trackerId];
@@ -1341,7 +1374,7 @@ app.get('/health', (req, res) => {
       return;
     }
 
-    if (bus.operatingHours && !isWithinOperatingHours(bus.operatingHours, now)) {
+    if (bus.operatingHours && !isWithinOperatingHours(bus.operatingHours)) {
       return; // not visible
     }
 
