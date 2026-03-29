@@ -911,7 +911,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
     const nowMinutes = now.getHours() * 60 + now.getMinutes();
     let nextDepartureMinutes = null;
     for (const dep of FIXED_DEPARTURE_TIMES_MINUTES) {
-      if (dep >= nowMinutes) {
+      if (dep > nowMinutes) {
         nextDepartureMinutes = dep;
         break;
       }
