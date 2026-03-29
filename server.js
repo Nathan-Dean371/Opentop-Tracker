@@ -77,8 +77,8 @@ const FIXED_DEPARTURE_TIMES_MINUTES = [
 const START_WAIT_RADIUS_METERS = 60; // how close to first stop counts as "at start"
 const STOPPED_SPEED_KMH_THRESHOLD = 2; // below this is treated as stopped
 const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "reached"
-const MOVING_AWAY_DELTA_METERS = 25; // minimum distance increase to treat as moving away
-const MOVING_AWAY_MIN_CONSECUTIVE = 2; // consecutive checks before auto-advancing a stale stop
+const FORWARD_ADVANCE_MARGIN_METERS = 120; // next stop must be meaningfully closer before auto-advance
+const MIN_AUTO_ADVANCE_INTERVAL_MS = 20000; // prevent rapid multi-stop jumps from sparse polling
 
 // Load persisted data on startup
 function loadData() {
@@ -233,13 +233,16 @@ app.get('/api/routes', (req, res) => {
 
 // Add a new route
 app.post('/api/routes', basicAuth, (req, res) => {
-  const { name, coordinates, color, waypoints } = req.body;
+  const { name, coordinates, color, waypoints, startStopId, endStopId, isLoop } = req.body;
   const route = {
     id: `route-${Date.now()}`,
     name,
     coordinates,
     waypoints: waypoints || coordinates,  // Store original waypoints for editing
     color: color || '#3388ff',
+    startStopId: startStopId || null,
+    endStopId: endStopId || null,
+    isLoop: isLoop === undefined ? true : Boolean(isLoop),
     visible: true, // Routes are visible by default
     createdAt: new Date().toISOString()
   };
@@ -251,7 +254,7 @@ app.post('/api/routes', basicAuth, (req, res) => {
 // Update a route
 app.put('/api/routes/:id', basicAuth, (req, res) => {
   const { id } = req.params;
-  const { name, coordinates, color } = req.body;
+  const { name, coordinates, color, startStopId, endStopId, isLoop } = req.body;
   const routeIndex = routes.findIndex(r => r.id === id);
   
   if (routeIndex === -1) {
@@ -262,11 +265,55 @@ app.put('/api/routes/:id', basicAuth, (req, res) => {
     ...routes[routeIndex],
     name: name || routes[routeIndex].name,
     coordinates: coordinates || routes[routeIndex].coordinates,
-    color: color || routes[routeIndex].color
+    color: color || routes[routeIndex].color,
+    startStopId: startStopId !== undefined ? startStopId : routes[routeIndex].startStopId,
+    endStopId: endStopId !== undefined ? endStopId : routes[routeIndex].endStopId,
+    isLoop: isLoop !== undefined ? Boolean(isLoop) : (routes[routeIndex].isLoop !== undefined ? routes[routeIndex].isLoop : true)
   };
   
+  Object.keys(busRouteAssignments).forEach(busId => {
+    if (busRouteAssignments[busId] === id) {
+      delete manualNextStops[busId];
+      delete busNextStopState[busId];
+    }
+  });
+
   dataChanged = true;
   res.json(routes[routeIndex]);
+});
+
+// Configure progression (start/end/loop) for a route
+app.post('/api/routes/:id/progression', basicAuth, (req, res) => {
+  const { id } = req.params;
+  const { startStopId, endStopId, isLoop } = req.body;
+
+  const routeIndex = routes.findIndex(r => r.id === id);
+  if (routeIndex === -1) {
+    return res.status(404).json({ error: 'Route not found' });
+  }
+
+  routes[routeIndex] = {
+    ...routes[routeIndex],
+    startStopId: startStopId !== undefined ? (startStopId || null) : (routes[routeIndex].startStopId || null),
+    endStopId: endStopId !== undefined ? (endStopId || null) : (routes[routeIndex].endStopId || null),
+    isLoop: isLoop !== undefined ? Boolean(isLoop) : (routes[routeIndex].isLoop !== undefined ? routes[routeIndex].isLoop : true)
+  };
+
+  Object.keys(busRouteAssignments).forEach(busId => {
+    if (busRouteAssignments[busId] === id) {
+      delete manualNextStops[busId];
+      delete busNextStopState[busId];
+    }
+  });
+
+  dataChanged = true;
+  res.json({
+    routeId: id,
+    startStopId: routes[routeIndex].startStopId,
+    endStopId: routes[routeIndex].endStopId,
+    isLoop: routes[routeIndex].isLoop,
+    message: 'Route progression settings updated'
+  });
 });
 
 // Delete a route
@@ -691,6 +738,8 @@ app.get('/api/eta/:trackerId', (req, res) => {
     return res.status(404).json({ error: 'Bus not assigned to any route' });
   }
 
+  const route = routes.find(r => r.id === routeId) || null;
+
   const busLocation = busLocations[trackerId];
   if (!busLocation) {
     return res.status(404).json({ error: 'No location data for this tracker' });
@@ -738,39 +787,38 @@ app.get('/api/eta/:trackerId', (req, res) => {
   // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
     let targetStop = null;
-    let movingAwayCount = 0;
  
     // Get the last known next stop state for this bus.
     // Backward-compatible with previous string-only state format.
     const lastState = busNextStopState[busId];
     const lastNextStopId = typeof lastState === 'string' ? lastState : lastState && lastState.nextStopId;
-    const lastDistanceToStop = typeof lastState === 'object' ? lastState.lastDistanceToStop : null;
-    const lastMovingAwayCount = typeof lastState === 'object' ? (lastState.movingAwayCount || 0) : 0;
+    const lastUpdatedAt = typeof lastState === 'object' ? (lastState.updatedAt || 0) : 0;
     const lastNextStop = routeStops.find(s => s.id === lastNextStopId);
  
     if (lastNextStop) {
       // If we have a valid last-known stop, check if we've arrived.
       const distanceToLast = calculateDistance(busLocation.lat, busLocation.lon, lastNextStop.lat, lastNextStop.lon);
-      const isMovingAwayFromLast =
-        lastDistanceToStop != null &&
-        speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
-        distanceToLast > lastDistanceToStop + MOVING_AWAY_DELTA_METERS;
+      const currentIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
+      const nextIndex = getNextStopIndex(routeStops, currentIndex, route);
+      const forwardStop = routeStops[nextIndex];
+      const distanceToForward = calculateDistance(busLocation.lat, busLocation.lon, forwardStop.lat, forwardStop.lon);
+      const isForwardClearlyCloser = distanceToForward + FORWARD_ADVANCE_MARGIN_METERS < distanceToLast;
+      const longEnoughSinceLastAdvance = Date.now() - lastUpdatedAt >= MIN_AUTO_ADVANCE_INTERVAL_MS;
  
       if (distanceToLast <= ARRIVAL_RADIUS_METERS) {
         // We've arrived. Advance to the next stop in the sequence.
-        const currentIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
-        const nextIndex = (currentIndex + 1) % routeStops.length;
-        targetStop = routeStops[nextIndex];
-      } else if (isMovingAwayFromLast && lastMovingAwayCount + 1 >= MOVING_AWAY_MIN_CONSECUTIVE) {
-        // Bus is consistently moving away from the tracked next stop.
-        // Treat that stop as passed and advance to avoid getting stuck.
-        const currentIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
-        const nextIndex = (currentIndex + 1) % routeStops.length;
-        targetStop = routeStops[nextIndex];
+        targetStop = forwardStop;
+      } else if (
+        speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
+        longEnoughSinceLastAdvance &&
+        isForwardClearlyCloser
+      ) {
+        // If the forward stop is significantly closer (and enough time has passed),
+        // assume the tracked stop has been passed without stopping.
+        targetStop = forwardStop;
       } else {
         // Still on the way to the last-known stop.
         targetStop = lastNextStop;
-        movingAwayCount = isMovingAwayFromLast ? lastMovingAwayCount + 1 : 0;
       }
     } else {
       // No state, so find the geographically nearest stop as a starting point.
@@ -801,7 +849,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
 
     if (distanceToTarget <= ARRIVAL_RADIUS_METERS && speedKmh < STOPPED_SPEED_KMH_THRESHOLD) {
       const currentIndex = routeStops.findIndex(s => s.id === targetStop.id);
-      const nextIndex = (currentIndex + 1) % routeStops.length;
+      const nextIndex = getNextStopIndex(routeStops, currentIndex, route);
       targetStop = routeStops[nextIndex];
       distanceToTarget = calculateDistance(
         busLocation.lat,
@@ -809,13 +857,11 @@ app.get('/api/eta/:trackerId', (req, res) => {
         targetStop.lat,
         targetStop.lon
       );
-      movingAwayCount = 0;
     }
 
     busNextStopState[busId] = {
       nextStopId: targetStop.id,
       lastDistanceToStop: Math.round(distanceToTarget),
-      movingAwayCount,
       updatedAt: Date.now()
     };
     nextStop = targetStop;
@@ -831,7 +877,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
 
   const nextStopIndex = routeStops.findIndex(s => s.id === nextStop.id);
   const currentStopIndex = nextStopIndex >= 0
-    ? (nextStopIndex - 1 + routeStops.length) % routeStops.length
+    ? getPreviousStopIndex(routeStops, nextStopIndex, route)
     : -1;
   const currentStop = currentStopIndex >= 0 ? routeStops[currentStopIndex] : null;
   const distanceToCurrent = currentStop
@@ -913,9 +959,57 @@ app.get('/api/eta/:trackerId', (req, res) => {
     currentSpeed: speedKmh ? speedKmh.toFixed(1) : '0', // km/h (already in km/h from OwnTracks)
     allStops: routeStops,
     serviceState,
-    nextRun
+    nextRun,
+    routeProgression: {
+      startStopId: route && route.startStopId ? route.startStopId : null,
+      endStopId: route && route.endStopId ? route.endStopId : null,
+      isLoop: isRouteLoop(route, routeStops)
+    }
   });
 });
+
+function isRouteLoop(route, routeStops) {
+  if (!routeStops || routeStops.length < 2) return true;
+  if (route && typeof route.isLoop === 'boolean') return route.isLoop;
+  if (route && route.startStopId && route.endStopId && route.startStopId !== route.endStopId) {
+    return false;
+  }
+  return true;
+}
+
+function getNextStopIndex(routeStops, currentIndex, route) {
+  if (currentIndex < 0 || currentIndex >= routeStops.length) return 0;
+
+  const loop = isRouteLoop(route, routeStops);
+  if (loop) {
+    return (currentIndex + 1) % routeStops.length;
+  }
+
+  const configuredEndIndex = route && route.endStopId
+    ? routeStops.findIndex(s => s.id === route.endStopId)
+    : -1;
+  const terminalIndex = configuredEndIndex >= 0 ? configuredEndIndex : routeStops.length - 1;
+
+  if (currentIndex >= terminalIndex) return terminalIndex;
+  return currentIndex + 1;
+}
+
+function getPreviousStopIndex(routeStops, currentIndex, route) {
+  if (currentIndex < 0 || currentIndex >= routeStops.length) return -1;
+
+  const loop = isRouteLoop(route, routeStops);
+  if (loop) {
+    return (currentIndex - 1 + routeStops.length) % routeStops.length;
+  }
+
+  const configuredStartIndex = route && route.startStopId
+    ? routeStops.findIndex(s => s.id === route.startStopId)
+    : -1;
+  const terminalStartIndex = configuredStartIndex >= 0 ? configuredStartIndex : 0;
+
+  if (currentIndex <= terminalStartIndex) return terminalStartIndex;
+  return currentIndex - 1;
+}
 
 // Helper function to calculate distance between two points (Haversine formula)
 function calculateDistance(lat1, lon1, lat2, lon2) {

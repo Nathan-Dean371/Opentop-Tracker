@@ -85,6 +85,39 @@
                         5. Choose "KML" (not KMZ) and download
                     </p>
                 </div>
+
+                <div class="form-section" style="margin-bottom: 20px;">
+                    <h3>Route Progression</h3>
+                    <p style="margin-bottom: 10px; color: #666;">Set route-specific start/end stops and whether the route loops back to the beginning.</p>
+                    <form id="routeProgressionForm">
+                        <div class="form-group">
+                            <label for="progressionRoute">Route</label>
+                            <select id="progressionRoute" required>
+                                <option value="">Select a route</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="progressionStartStop">Start Stop</label>
+                            <select id="progressionStartStop">
+                                <option value="">Auto (first stop by order)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="progressionEndStop">End Stop</label>
+                            <select id="progressionEndStop">
+                                <option value="">Auto (last stop by order)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="progressionLoopMode">Loop Route</label>
+                            <select id="progressionLoopMode" required>
+                                <option value="true">Yes (wrap to start)</option>
+                                <option value="false">No (terminate at end stop)</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-success">Save Progression Settings</button>
+                    </form>
+                </div>
                 
                 <h3>Existing Routes</h3>
                 <table id="routesTable">
@@ -93,6 +126,7 @@
                             <th>Name</th>
                             <th>Color</th>
                             <th>Points</th>
+                            <th>Progression</th>
                             <th>Created</th>
                             <th>Actions</th>
                         </tr>
@@ -874,35 +908,151 @@
                 showAlert('Error: ' + error.message, 'error');
             }
         });
+
+        document.getElementById('routeProgressionForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const routeId = document.getElementById('progressionRoute').value;
+            if (!routeId) {
+                showAlert('Please select a route', 'error');
+                return;
+            }
+
+            const startStopId = document.getElementById('progressionStartStop').value || null;
+            const endStopId = document.getElementById('progressionEndStop').value || null;
+            const isLoop = document.getElementById('progressionLoopMode').value === 'true';
+
+            try {
+                const response = await fetch(`/api/routes/${routeId}/progression`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ startStopId, endStopId, isLoop })
+                });
+
+                if (response.ok) {
+                    showAlert('Route progression settings saved!');
+                    await loadRoutes();
+                    await loadStops();
+                    updateProgressionStopOptions();
+                } else {
+                    const err = await response.json().catch(() => ({}));
+                    showAlert(err.error || 'Error saving route progression settings', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        });
         
         // Load data functions
+        function getSortedStopsForRoute(routeId) {
+            return stops
+                .filter(s => s.routeId === routeId)
+                .sort((a, b) => a.order - b.order);
+        }
+
+        function describeRouteProgression(route) {
+            const routeStops = getSortedStopsForRoute(route.id);
+            if (routeStops.length === 0) return 'No stops';
+
+            const configuredStart = route.startStopId
+                ? routeStops.find(s => s.id === route.startStopId)
+                : null;
+            const configuredEnd = route.endStopId
+                ? routeStops.find(s => s.id === route.endStopId)
+                : null;
+
+            const startStop = configuredStart || routeStops[0];
+            const endStop = configuredEnd || routeStops[routeStops.length - 1];
+            const isLoop = route.isLoop !== false;
+
+            if (isLoop) {
+                return `Loop: ${startStop.name}`;
+            }
+
+            return `${startStop.name} -> ${endStop.name}`;
+        }
+
+        function renderRoutesTable() {
+            const tbody = document.querySelector('#routesTable tbody');
+            if (!tbody) return;
+
+            tbody.innerHTML = routes.map(route => {
+                const isVisible = route.visible !== false; // Default to visible if not set
+                const progressionText = describeRouteProgression(route);
+                return `
+                    <tr>
+                        <td>${route.name}</td>
+                        <td><span style="display: inline-block; width: 40px; height: 20px; background: ${route.color}; border-radius: 3px;"></span></td>
+                        <td>${route.coordinates.length} points</td>
+                        <td>${progressionText}</td>
+                        <td>${new Date(route.createdAt).toLocaleDateString()}</td>
+                        <td class="actions">
+                            <button class="btn ${isVisible ? 'btn-secondary' : 'btn-primary'}" onclick="toggleRouteVisibility('${route.id}')">
+                                ${isVisible ? 'Hide' : 'Show'}
+                            </button>
+                            <button class="btn btn-primary" onclick="editRoute('${route.id}')">Edit</button>
+                            <button class="btn btn-primary" onclick="createStopsFromRoute('${route.id}', '${route.name.replace(/'/g, "\\'")}')">Create Stops</button>
+                            <button class="btn btn-danger" onclick="deleteRoute('${route.id}')">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function updateProgressionRouteOptions() {
+            const select = document.getElementById('progressionRoute');
+            if (!select) return;
+
+            const currentValue = select.value;
+            const options = routes.map(route => `<option value="${route.id}">${route.name}</option>`).join('');
+            select.innerHTML = '<option value="">Select a route</option>' + options;
+
+            if (currentValue && routes.some(r => r.id === currentValue)) {
+                select.value = currentValue;
+            }
+
+            if (!select.value && routes.length > 0) {
+                select.value = routes[0].id;
+            }
+
+            updateProgressionStopOptions();
+        }
+
+        function updateProgressionStopOptions() {
+            const routeSelect = document.getElementById('progressionRoute');
+            const startSelect = document.getElementById('progressionStartStop');
+            const endSelect = document.getElementById('progressionEndStop');
+            const loopSelect = document.getElementById('progressionLoopMode');
+            if (!routeSelect || !startSelect || !endSelect || !loopSelect) return;
+
+            const routeId = routeSelect.value;
+            const route = routes.find(r => r.id === routeId);
+            const routeStops = routeId ? getSortedStopsForRoute(routeId) : [];
+
+            const stopOptions = routeStops.map(stop =>
+                `<option value="${stop.id}">#${stop.order} - ${stop.name}</option>`
+            ).join('');
+
+            startSelect.innerHTML = '<option value="">Auto (first stop by order)</option>' + stopOptions;
+            endSelect.innerHTML = '<option value="">Auto (last stop by order)</option>' + stopOptions;
+
+            if (route) {
+                startSelect.value = route.startStopId || '';
+                endSelect.value = route.endStopId || '';
+                loopSelect.value = route.isLoop === false ? 'false' : 'true';
+            } else {
+                loopSelect.value = 'true';
+            }
+        }
+
         async function loadRoutes() {
             try {
                 const response = await fetch('/api/routes');
                 routes = await response.json();
-                
-                const tbody = document.querySelector('#routesTable tbody');
-                tbody.innerHTML = routes.map(route => {
-                    const isVisible = route.visible !== false; // Default to visible if not set
-                    return `
-                        <tr>
-                            <td>${route.name}</td>
-                            <td><span style="display: inline-block; width: 40px; height: 20px; background: ${route.color}; border-radius: 3px;"></span></td>
-                            <td>${route.coordinates.length} points</td>
-                            <td>${new Date(route.createdAt).toLocaleDateString()}</td>
-                            <td class="actions">
-                                <button class="btn ${isVisible ? 'btn-secondary' : 'btn-primary'}" onclick="toggleRouteVisibility('${route.id}')">
-                                    ${isVisible ? 'Hide' : 'Show'}
-                                </button>
-                                <button class="btn btn-primary" onclick="editRoute('${route.id}')">Edit</button>
-                                <button class="btn btn-primary" onclick="createStopsFromRoute('${route.id}', '${route.name.replace(/'/g, "\\'")}')">Create Stops</button>
-                                <button class="btn btn-danger" onclick="deleteRoute('${route.id}')">Delete</button>
-                            </td>
-                        </tr>
-                    `;
-                }).join('');
-                
+
+                renderRoutesTable();
                 updateRouteSelects();
+                updateProgressionRouteOptions();
                 updateAdminRoutePreview();
             } catch (error) {
                 console.error('Error loading routes:', error);
@@ -916,6 +1066,8 @@
                 
                 updateStopFilterOptions();
                 filterStops();
+                renderRoutesTable();
+                updateProgressionStopOptions();
                 updateAdminStopsPreview();
             } catch (error) {
                 console.error('Error loading stops:', error);
@@ -1787,6 +1939,11 @@
             const removeBtn = document.getElementById('adminRemoveTestBusBtn');
             if (addBtn) addBtn.addEventListener('click', addAdminTestBusAtStop8);
             if (removeBtn) removeBtn.addEventListener('click', removeAdminTestBus);
+
+            const progressionRouteSelect = document.getElementById('progressionRoute');
+            if (progressionRouteSelect) {
+                progressionRouteSelect.addEventListener('change', updateProgressionStopOptions);
+            }
         });
     </script>
         <!-- Admin ETA bar -->
