@@ -75,7 +75,7 @@ const FIXED_DEPARTURE_TIMES_MINUTES = [
   parseTimeToMinutes('15:30')
 ].filter(v => v !== null).sort((a, b) => a - b);
 
-const START_WAIT_RADIUS_METERS = 60; // how close to first stop counts as "at start"
+const START_WAIT_RADIUS_METERS = 100; // how close to first stop counts as "at start"
 const STOPPED_SPEED_KMH_THRESHOLD = 2; // below this is treated as stopped
 const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "reached"
 const FORWARD_ADVANCE_MARGIN_METERS = 120; // next stop must be meaningfully closer before auto-advance
