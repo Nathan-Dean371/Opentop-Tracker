@@ -48,6 +48,16 @@ const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
 const SERVICE_TIME_ZONE = process.env.SERVICE_TIME_ZONE || 'Europe/Dublin';
 
+// OwnTracks / location ingestion guards
+// - LOCATION_MAX_STALE_SECONDS: drop points older than this (prevents queued/backfilled locations from taking over)
+// - LOCATION_MAX_OUT_OF_ORDER_SECONDS: allow minor reordering jitter without dropping
+const LOCATION_MAX_STALE_SECONDS = Number.isFinite(parseInt(process.env.LOCATION_MAX_STALE_SECONDS, 10))
+  ? parseInt(process.env.LOCATION_MAX_STALE_SECONDS, 10)
+  : 900; // 15 minutes
+const LOCATION_MAX_OUT_OF_ORDER_SECONDS = Number.isFinite(parseInt(process.env.LOCATION_MAX_OUT_OF_ORDER_SECONDS, 10))
+  ? parseInt(process.env.LOCATION_MAX_OUT_OF_ORDER_SECONDS, 10)
+  : 30;
+
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -171,21 +181,54 @@ app.post('/owntracks', (req, res) => {
   // OwnTracks sends location data in this format
   if (data._type === 'location') {
     const deviceId = data.tid || 'default';
-    
+
+    const receivedAtSeconds = Math.floor(Date.now() / 1000);
+    const deviceTimestamp = Number.isFinite(parseInt(data.tst, 10)) ? parseInt(data.tst, 10) : null;
+
+    // Reject stale/backfilled points (e.g., store-and-forward queue dumps)
+    if (deviceTimestamp != null) {
+      const stalenessSeconds = receivedAtSeconds - deviceTimestamp;
+      if (stalenessSeconds > LOCATION_MAX_STALE_SECONDS) {
+        console.warn(
+          `🧹 Ignoring stale location for ${deviceId} (stale by ${stalenessSeconds}s > ${LOCATION_MAX_STALE_SECONDS}s)`
+        );
+        return res.status(200).json({ success: true, accepted: false, reason: 'stale' });
+      }
+    }
+
+    // Reject out-of-order points beyond a small jitter allowance
+    const prev = busLocations[deviceId];
+    const prevDeviceTimestamp = prev && Number.isFinite(parseInt(prev.deviceTimestamp, 10))
+      ? parseInt(prev.deviceTimestamp, 10)
+      : (prev && Number.isFinite(parseInt(prev.timestamp, 10)) ? parseInt(prev.timestamp, 10) : null);
+
+    if (deviceTimestamp != null && prevDeviceTimestamp != null) {
+      if (deviceTimestamp < (prevDeviceTimestamp - LOCATION_MAX_OUT_OF_ORDER_SECONDS)) {
+        console.warn(
+          `⏪ Ignoring out-of-order location for ${deviceId} (tst=${deviceTimestamp} < prev=${prevDeviceTimestamp} - ${LOCATION_MAX_OUT_OF_ORDER_SECONDS}s)`
+        );
+        return res.status(200).json({ success: true, accepted: false, reason: 'out_of_order' });
+      }
+    }
+
     busLocations[deviceId] = {
       lat: data.lat,
       lon: data.lon,
-      timestamp: data.tst || Math.floor(Date.now() / 1000),
+      // Use server receive time for freshness/"Updated ... ago" calculations
+      timestamp: receivedAtSeconds,
+      // Preserve device timestamp separately for debugging/inspection
+      deviceTimestamp,
+      receivedAt: receivedAtSeconds,
       battery: data.batt,
       accuracy: data.acc,
       velocity: data.vel,
       altitude: data.alt
     };
-    
-    console.log(`Location update for device ${deviceId}:`, busLocations[deviceId]);
+
+    console.log(`Location update accepted for device ${deviceId}:`, busLocations[deviceId]);
   }
   
-  res.status(200).json({ success: true });
+  res.status(200).json({ success: true, accepted: true });
 });
 
 // Get current bus locations
