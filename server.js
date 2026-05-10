@@ -278,7 +278,8 @@ app.post('/owntracks', (req, res) => {
         console.warn(
           `🧹 Ignoring stale location for ${deviceId} (stale by ${stalenessSeconds}s > ${LOCATION_MAX_STALE_SECONDS}s)`
         );
-        return res.status(200).json({ success: true, accepted: false, reason: 'stale' });
+        // Keep the response schema minimal/stable; some clients strictly decode JSON.
+        return res.status(200).json({ success: true, accepted: false });
       }
     }
 
@@ -293,7 +294,8 @@ app.post('/owntracks', (req, res) => {
         console.warn(
           `⏪ Ignoring out-of-order location for ${deviceId} (tst=${deviceTimestamp} < prev=${prevDeviceTimestamp} - ${LOCATION_MAX_OUT_OF_ORDER_SECONDS}s)`
         );
-        return res.status(200).json({ success: true, accepted: false, reason: 'out_of_order' });
+        // Keep the response schema minimal/stable; some clients strictly decode JSON.
+        return res.status(200).json({ success: true, accepted: false });
       }
     }
 
