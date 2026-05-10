@@ -5,7 +5,18 @@ const multer = require('multer');
 const fs = require('fs');
 
 const app = express();
+// These endpoints are real-time and clients expect JSON bodies.
+// Disable ETag/304 caching to avoid empty-body 304 responses.
+app.set('etag', false);
 const PORT = process.env.PORT || 3000;
+
+// Prevent intermediary/proxy caching for API + webhook endpoints
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/') || req.path === '/owntracks' || req.path === '/owntracks/') {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+  next();
+});
 
 // Admin credentials from environment variables (with defaults for local dev)
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
@@ -39,6 +50,14 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Increased limit for large route coordinates
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// Ensure JSON parse errors return JSON (some clients expect JSON responses)
+app.use((err, req, res, next) => {
+  if (err && err instanceof SyntaxError && 'body' in err) {
+    return res.status(400).json({ success: false, error: 'invalid_json' });
+  }
+  next(err);
+});
 app.use(express.static('public'));
 // Serve Leaflet from node_modules
 app.use('/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
@@ -238,6 +257,10 @@ setInterval(() => {
 loadData();
 
 // OwnTracks webhook endpoint
+app.get('/owntracks', (req, res) => {
+  res.status(200).json({ success: true, message: 'OwnTracks endpoint ready. Send POST with JSON body.' });
+});
+
 app.post('/owntracks', (req, res) => {
   const data = req.body;
   

@@ -230,7 +230,7 @@
         // Load buses
         async function loadBuses() {
             try {
-                const response = await fetch('/api/buses');
+                const response = await fetch('/api/buses', { cache: 'no-store' });
                 buses = await response.json();
             } catch (error) {
                 console.error('Error loading buses:', error);
@@ -243,7 +243,7 @@
         // Load assignments
         async function loadAssignments() {
             try {
-                const response = await fetch('/api/assignments');
+                const response = await fetch('/api/assignments', { cache: 'no-store' });
                 assignments = await response.json();
             } catch (error) {
                 console.error('Error loading assignments:', error);
@@ -253,7 +253,7 @@
         // Get ETA for a tracker
         async function getETA(trackerId) {
             try {
-                const response = await fetch(`/api/eta/${encodeURIComponent(trackerId)}`);
+                const response = await fetch(`/api/eta/${encodeURIComponent(trackerId)}`, { cache: 'no-store' });
                 if (response.ok) {
                     return await response.json();
                 }
@@ -269,7 +269,7 @@
         // Update bus locations
         async function updateBusLocations() {
             try {
-                const response = await fetch('/api/locations');
+                const response = await fetch('/api/locations', { cache: 'no-store' });
                 const locations = await response.json();
                 
                 const busInfoDiv = document.getElementById('busInfo');

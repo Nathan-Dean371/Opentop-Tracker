@@ -306,7 +306,7 @@
         // Get ETA
         async function getETA(trackerId) {
             try {
-                const response = await fetch(`/api/eta/${encodeURIComponent(trackerId)}`);
+                    const response = await fetch(`/api/eta/${encodeURIComponent(trackerId)}`, { cache: 'no-store' });
                 if (response.ok) {
                     return await response.json();
                 }
@@ -320,7 +320,7 @@
         // Update bus locations
         async function updateBusLocations() {
             try {
-                const response = await fetch('/api/locations');
+                    const response = await fetch('/api/locations', { cache: 'no-store' });
                 const locations = await response.json();
                 
                 const infoCardsContainer = document.getElementById('info-cards');
