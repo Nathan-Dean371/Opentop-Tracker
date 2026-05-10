@@ -77,19 +77,66 @@ let busNextStopState = {}; // Maps bus ID to next-stop progression state
 
 // Fixed daily departure times (first-stop departures) in local time
 // Used to determine "next run" when the bus is waiting at the start.
-const FIXED_DEPARTURE_TIMES_MINUTES = [
-  parseTimeToMinutes('09:30'),
-  parseTimeToMinutes('11:00'),
-  parseTimeToMinutes('12:30'),
-  parseTimeToMinutes('14:00'),
-  parseTimeToMinutes('15:30')
-].filter(v => v !== null).sort((a, b) => a - b);
+// NOTE: Schedule is now per-bus via bus.departureTimes (HH:MM strings).
+// The old hardcoded list has been removed intentionally.
 
 const START_WAIT_RADIUS_METERS = 100; // how close to first stop counts as "at start"
 const STOPPED_SPEED_KMH_THRESHOLD = 2; // below this is treated as stopped
 const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "reached"
 const FORWARD_ADVANCE_MARGIN_METERS = 120; // next stop must be meaningfully closer before auto-advance
 const MIN_AUTO_ADVANCE_INTERVAL_MS = 20000; // prevent rapid multi-stop jumps from sparse polling
+
+function normalizeDepartureTimesInput(departureTimes) {
+  // Accept: array of strings OR a single comma/semicolon/newline-separated string.
+  // Output: canonical array of 'HH:MM' strings (24h, zero padded), sorted, de-duped.
+  const rawParts = [];
+  if (Array.isArray(departureTimes)) {
+    departureTimes.forEach(v => {
+      if (typeof v === 'string') rawParts.push(v);
+      else if (v != null) rawParts.push(String(v));
+    });
+  } else if (typeof departureTimes === 'string') {
+    departureTimes
+      .split(/[\n,;]+/)
+      .forEach(v => rawParts.push(v));
+  } else if (departureTimes != null) {
+    rawParts.push(String(departureTimes));
+  }
+
+  const seen = new Set();
+  const minutesList = [];
+  rawParts
+    .map(s => (typeof s === 'string' ? s.trim() : String(s).trim()))
+    .filter(Boolean)
+    .forEach(s => {
+      const norm = normalizeTimeFormat(s);
+      const mins = norm ? parseTimeToMinutes(norm) : null;
+      if (mins == null) return;
+      if (seen.has(mins)) return;
+      seen.add(mins);
+      minutesList.push(mins);
+    });
+
+  minutesList.sort((a, b) => a - b);
+  return minutesList.map(minutesToHHMM);
+}
+
+function getDepartureMinutesForBus(bus) {
+  if (!bus || !Array.isArray(bus.departureTimes)) return [];
+  const minutes = [];
+  const seen = new Set();
+  bus.departureTimes.forEach(t => {
+    if (typeof t !== 'string') return;
+    const norm = normalizeTimeFormat(t);
+    const mins = norm ? parseTimeToMinutes(norm) : null;
+    if (mins == null) return;
+    if (seen.has(mins)) return;
+    seen.add(mins);
+    minutes.push(mins);
+  });
+  minutes.sort((a, b) => a - b);
+  return minutes;
+}
 
 // Load persisted data on startup
 function loadData() {
@@ -122,12 +169,28 @@ function loadData() {
               }
             }
           }
+
+          // Normalize any existing departureTimes (per-bus timetable)
+          if (b) {
+            if (b.departureTimes !== undefined) {
+              const normalized = normalizeDepartureTimesInput(b.departureTimes);
+              // Persist canonical array form
+              if (!Array.isArray(b.departureTimes) || JSON.stringify(b.departureTimes) !== JSON.stringify(normalized)) {
+                b.departureTimes = normalized;
+                migrated = true;
+              }
+            } else {
+              // Explicitly store empty list for older data files (no fallback to defaults)
+              b.departureTimes = [];
+              migrated = true;
+            }
+          }
         });
 
         if (migrated) {
           dataChanged = true;
           saveData();
-          console.log('🔧 Migrated operatingHours to canonical HH:MM format');
+          console.log('🔧 Migrated bus operatingHours and departureTimes to canonical formats');
         }
       } catch (e) {
         console.error('⚠️ Error migrating operatingHours:', e && e.message);
@@ -520,7 +583,12 @@ app.get('/api/buses', (req, res) => {
 
 // Add a new bus
 app.post('/api/buses', basicAuth, (req, res) => {
-  const { name, number, trackerId, operatingHours } = req.body;
+  const { name, number, trackerId, operatingHours, departureTimes } = req.body;
+
+  const normalizedDepartureTimes = normalizeDepartureTimesInput(departureTimes);
+  if (!Array.isArray(normalizedDepartureTimes) || normalizedDepartureTimes.length === 0) {
+    return res.status(400).json({ error: 'departureTimes is required (provide at least one HH:MM time)' });
+  }
   // Normalize operatingHours to canonical 'HH:MM' format when provided
   let storedOperatingHours = null;
   if (operatingHours && (operatingHours.start || operatingHours.end)) {
@@ -536,6 +604,7 @@ app.post('/api/buses', basicAuth, (req, res) => {
     name,
     number,
     trackerId,
+    departureTimes: normalizedDepartureTimes,
     operatingHours: storedOperatingHours, // { start: 'HH:MM', end: 'HH:MM' } or null
     createdAt: new Date().toISOString()
   };
@@ -552,7 +621,7 @@ app.post('/api/buses', basicAuth, (req, res) => {
 // Update a bus
 app.put('/api/buses/:id', basicAuth, (req, res) => {
   const { id } = req.params;
-  const { name, number, trackerId, operatingHours } = req.body;
+  const { name, number, trackerId, operatingHours, departureTimes } = req.body;
   const busIndex = buses.findIndex(b => b.id === id);
   
   if (busIndex === -1) {
@@ -576,11 +645,22 @@ app.put('/api/buses/:id', basicAuth, (req, res) => {
     }
   }
 
+  // Normalize departureTimes if provided (PUT with undefined means leave unchanged)
+  let newDepartureTimes = buses[busIndex].departureTimes;
+  if (departureTimes !== undefined) {
+    const normalized = normalizeDepartureTimesInput(departureTimes);
+    if (!Array.isArray(normalized) || normalized.length === 0) {
+      return res.status(400).json({ error: 'departureTimes must include at least one valid HH:MM time' });
+    }
+    newDepartureTimes = normalized;
+  }
+
   buses[busIndex] = {
     ...buses[busIndex],
     name: name || buses[busIndex].name,
     number: number || buses[busIndex].number,
     trackerId: trackerId || buses[busIndex].trackerId,
+    departureTimes: newDepartureTimes,
     operatingHours: newOperatingHours
   };
   
@@ -776,6 +856,11 @@ app.get('/api/eta/:trackerId', (req, res) => {
     return res.status(404).json({ error: 'Tracker not assigned to any bus' });
   }
 
+  const bus = buses.find(b => b.id === busId) || null;
+  if (!bus) {
+    return res.status(404).json({ error: 'Assigned bus not found' });
+  }
+
   const routeId = busRouteAssignments[busId];
   if (!routeId) {
     return res.status(404).json({ error: 'Bus not assigned to any route' });
@@ -938,7 +1023,8 @@ app.get('/api/eta/:trackerId', (req, res) => {
 
   // Timetable-based "waiting at start" detection only applies when there is
   // no manual override in effect.
-  if (!isManualOverride && FIXED_DEPARTURE_TIMES_MINUTES.length > 0) {
+  const departureTimesMinutes = getDepartureMinutesForBus(bus);
+  if (!isManualOverride && departureTimesMinutes.length > 0) {
     const distanceToFirst = calculateDistance(
       busLocation.lat,
       busLocation.lon,
@@ -954,7 +1040,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
     const nowMinutes = getMinutesInTimeZone(now, SERVICE_TIME_ZONE);
     const nowSeconds = getSecondsSinceMidnightInTimeZone(now, SERVICE_TIME_ZONE);
     let nextDepartureMinutes = null;
-    for (const dep of FIXED_DEPARTURE_TIMES_MINUTES) {
+    for (const dep of departureTimesMinutes) {
       if (dep > nowMinutes) {
         nextDepartureMinutes = dep;
         break;
@@ -978,7 +1064,9 @@ app.get('/api/eta/:trackerId', (req, res) => {
       }
     } else {
       // No more departures today
-      serviceState = 'finished';
+      if (isNearStart && isStopped) {
+        serviceState = 'finished';
+      }
     }
   }
 
