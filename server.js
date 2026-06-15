@@ -329,7 +329,7 @@ app.post(['/owntracks', '/owntracks/'], (req, res) => {
     console.log(`Location update accepted for device ${deviceId}:`, busLocations[deviceId]);
   }
   
-  res.status(200).end();
+  res.status(200).json({ success: true });
 });
 
 // Get current bus locations
