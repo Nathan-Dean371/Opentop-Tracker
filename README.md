@@ -53,8 +53,13 @@ npm start
    - **Mode**: HTTP
    - **URL**: `http://your-server-ip:3000/owntracks`
    - **Device ID**: Choose a unique identifier (e.g., "bus1", "bus2")
+    - **Location interval**: Set this lower if you need more frequent updates
+    - **Minimal location displacement**: Reduce this if the phone only reports after moving too far
+    - **Move mode interval**: If using Move mode, make sure its interval is also short enough for your test
 
 3. Enable location tracking and the app will start sending data automatically
+
+If you only see an occasional update from a phone, the OwnTracks app is usually rate-limiting on-device. The server can accept every post it receives, but it cannot make the phone transmit more often.
 
 ### OwnTracks Data Format
 

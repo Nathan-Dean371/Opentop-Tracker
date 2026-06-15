@@ -271,12 +271,12 @@ app.post(['/owntracks', '/owntracks/'], (req, res) => {
       data = JSON.parse(data);
     } catch (error) {
       console.warn('⚠️ OwnTracks sent invalid JSON payload:', error.message);
-      return res.status(400).json({ success: false, error: 'invalid_json' });
+      return res.status(200).end();
     }
   }
 
   if (!data || typeof data !== 'object') {
-    return res.status(400).json({ success: false, error: 'invalid_json' });
+    return res.status(200).end();
   }
   
   // OwnTracks sends location data in this format
@@ -293,8 +293,7 @@ app.post(['/owntracks', '/owntracks/'], (req, res) => {
         console.warn(
           `🧹 Ignoring stale location for ${deviceId} (stale by ${stalenessSeconds}s > ${LOCATION_MAX_STALE_SECONDS}s)`
         );
-        // Keep the response schema minimal/stable; some clients strictly decode JSON.
-        return res.status(200).json({ success: true, accepted: false });
+        return res.status(200).end();
       }
     }
 
@@ -309,8 +308,7 @@ app.post(['/owntracks', '/owntracks/'], (req, res) => {
         console.warn(
           `⏪ Ignoring out-of-order location for ${deviceId} (tst=${deviceTimestamp} < prev=${prevDeviceTimestamp} - ${LOCATION_MAX_OUT_OF_ORDER_SECONDS}s)`
         );
-        // Keep the response schema minimal/stable; some clients strictly decode JSON.
-        return res.status(200).json({ success: true, accepted: false });
+        return res.status(200).end();
       }
     }
 
@@ -331,7 +329,7 @@ app.post(['/owntracks', '/owntracks/'], (req, res) => {
     console.log(`Location update accepted for device ${deviceId}:`, busLocations[deviceId]);
   }
   
-  res.status(200).json({ success: true, accepted: true });
+  res.status(200).end();
 });
 
 // Get current bus locations
