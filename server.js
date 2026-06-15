@@ -50,6 +50,8 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Increased limit for large route coordinates
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+// OwnTracks sometimes posts without a JSON content-type, so accept raw text on this path too.
+app.use('/owntracks', express.text({ type: '*/*', limit: '10mb' }));
 
 // Ensure JSON parse errors return JSON (some clients expect JSON responses)
 app.use((err, req, res, next) => {
@@ -257,12 +259,25 @@ setInterval(() => {
 loadData();
 
 // OwnTracks webhook endpoint
-app.get('/owntracks', (req, res) => {
+app.get(['/owntracks', '/owntracks/'], (req, res) => {
   res.status(200).json({ success: true, message: 'OwnTracks endpoint ready. Send POST with JSON body.' });
 });
 
-app.post('/owntracks', (req, res) => {
-  const data = req.body;
+app.post(['/owntracks', '/owntracks/'], (req, res) => {
+  let data = req.body;
+
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch (error) {
+      console.warn('⚠️ OwnTracks sent invalid JSON payload:', error.message);
+      return res.status(400).json({ success: false, error: 'invalid_json' });
+    }
+  }
+
+  if (!data || typeof data !== 'object') {
+    return res.status(400).json({ success: false, error: 'invalid_json' });
+  }
   
   // OwnTracks sends location data in this format
   if (data._type === 'location') {
