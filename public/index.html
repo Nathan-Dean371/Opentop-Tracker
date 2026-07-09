@@ -367,7 +367,7 @@
                     
                     // Find bus info
                     const bus = buses.find(b => b.trackerId === deviceId);
-                    const busName = bus ? `${bus.name} (${bus.number})` : `Bus ${deviceId}`;
+                    const busName = bus ? (bus.name || `Bus ${deviceId}`) : `Bus ${deviceId}`;
                     
                     // Update or create marker
                     if (busMarkers[deviceId]) {
@@ -397,12 +397,13 @@
                     // Update popup
                     const age = Math.floor(Date.now() / 1000 - timestamp);
                     const isActive = age < 300; // Active if updated in last 5 minutes
-                    const isStopped = isActive && (velocity === undefined || velocity < 2); // Stopped if active but not moving
+                    const isWaiting = !isActive || (etaData && etaData.serviceState === 'waiting');
+                    const isStopped = !isWaiting && (velocity === undefined || velocity < 2); // Stopped if active but not moving
                     
                     let statusClass, statusText;
-                    if (!isActive) {
-                        statusClass = 'inactive';
-                        statusText = 'Inactive';
+                    if (isWaiting) {
+                        statusClass = 'waiting';
+                        statusText = 'Waiting';
                     } else if (isStopped) {
                         statusClass = 'stopped';
                         statusText = 'Stopped';
