@@ -363,7 +363,7 @@
                 
                 for (const [deviceId, location] of Object.entries(locations)) {
                     activeBuses.add(deviceId);
-                    const { lat, lon, timestamp, battery, accuracy, velocity } = location;
+                    const { lat, lon, timestamp, accuracy, velocity } = location;
                     
                     // Find bus info
                     const bus = buses.find(b => b.trackerId === deviceId);
@@ -414,8 +414,6 @@
                     let popupContent = `
                         <b>${busName}</b><br>
                         Status: <span class="status ${statusClass}">${statusText}</span><br>
-                        Battery: ${battery ?? 'N/A'}%<br>
-                        Speed: ${velocity != null ? velocity.toFixed(1) : 'N/A'} km/h<br>
                         Updated: ${age}s ago
                     `;
                     
@@ -461,14 +459,6 @@
                             </div>
                         </div>
                         <div class="bus-card__grid">
-                            <div class="bus-card__row">
-                                <span class="bus-card__label">Battery</span>
-                                <span class="bus-card__value">${battery ?? 'N/A'}%</span>
-                            </div>
-                            <div class="bus-card__row">
-                                <span class="bus-card__label">Speed</span>
-                                <span class="bus-card__value">${velocity != null ? velocity.toFixed(1) : 'N/A'} km/h</span>
-                            </div>
                             <div class="bus-card__row">
                                 <span class="bus-card__label">Accuracy</span>
                                 <span class="bus-card__value">±${accuracy ?? 'N/A'} m</span>

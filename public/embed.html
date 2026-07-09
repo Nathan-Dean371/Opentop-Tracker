@@ -490,7 +490,7 @@
                 infoCardsContainer.innerHTML = ''; // Clear existing cards
 
                 for (const [deviceId, location] of Object.entries(locations)) {
-                    const { lat, lon, timestamp, battery, velocity } = location;
+                    const { lat, lon, timestamp, velocity } = location;
                     
                     // Find bus info
                     const bus = buses.find(b => b.trackerId === deviceId);
@@ -531,8 +531,6 @@
                     let popupContent = `
                         <b>${busName}</b><br>
                         <span class="status ${statusClass}">${statusText}</span><br>
-                        Battery: ${battery || 'N/A'}%<br>
-                        Speed: ${velocity ? velocity.toFixed(1) : 'N/A'} km/h<br>
                         Updated: ${age}s ago
                     `;
                     
@@ -582,10 +580,6 @@
                     infoCard.className = 'info-card';
                     let infoCardContent = `
                         <b>${busName}</b> <span class="status ${statusClass}">${statusText}</span>
-                        <div class="details">
-                            <span><b>Speed:</b> ${velocity ? velocity.toFixed(1) : 'N/A'} km/h</span>
-                            <span><b>Battery:</b> ${battery || 'N/A'}%</span>
-                        </div>
                     `;
 
                     if (etaData) {
