@@ -32,8 +32,9 @@
                 <button id="floatingStopClose" class="floating-stop-info__close" type="button" aria-label="Close stop info">✕</button>
                 <div class="floating-stop-info__label">Selected Stop</div>
                 <h3 id="floatingStopTitle" class="floating-stop-info__title">Stop</h3>
-                <div class="floating-stop-info__meta-row"><span class="floating-stop-info__meta-key">Route</span><span id="floatingStopRoute" class="floating-stop-info__meta-value">N/A</span></div>
-                <div class="floating-stop-info__meta-row"><span class="floating-stop-info__meta-key">Stop</span><span id="floatingStopOrder" class="floating-stop-info__meta-value">N/A</span></div>
+                <div id="floatingStopNavigateWrap" class="floating-stop-info__action-row floating-stop-info__action-row--hidden">
+                    <a id="floatingStopNavigateLink" class="floating-stop-info__action-link" href="#" target="_blank" rel="noopener noreferrer">Navigate With Google Maps</a>
+                </div>
             </div>
             <div class="map-legend" aria-label="Map legend">
                 <div class="map-legend__item">
@@ -136,13 +137,24 @@
         function showStopInfoPanel(stop, route) {
             const panel = document.getElementById('floatingStopInfo');
             const title = document.getElementById('floatingStopTitle');
-            const routeField = document.getElementById('floatingStopRoute');
-            const orderField = document.getElementById('floatingStopOrder');
-            if (!panel || !title || !routeField || !orderField) return;
+            const navigateWrap = document.getElementById('floatingStopNavigateWrap');
+            const navigateLink = document.getElementById('floatingStopNavigateLink');
+            if (!panel || !title || !navigateWrap || !navigateLink) return;
 
             title.textContent = stop.name || 'Unnamed stop';
-            routeField.textContent = route ? route.name : 'N/A';
-            orderField.textContent = stop.order != null ? `#${stop.order}` : 'N/A';
+
+            const navigateUrl = typeof stop.googleMapsNavigateUrl === 'string'
+                ? stop.googleMapsNavigateUrl.trim()
+                : '';
+
+            if (navigateUrl) {
+                navigateLink.href = navigateUrl;
+                navigateWrap.classList.remove('floating-stop-info__action-row--hidden');
+            } else {
+                navigateLink.removeAttribute('href');
+                navigateWrap.classList.add('floating-stop-info__action-row--hidden');
+            }
+
             panel.classList.remove('floating-stop-info--hidden');
         }
 

@@ -107,6 +107,27 @@ const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "r
 const FORWARD_ADVANCE_MARGIN_METERS = 120; // next stop must be meaningfully closer before auto-advance
 const MIN_AUTO_ADVANCE_INTERVAL_MS = 20000; // prevent rapid multi-stop jumps from sparse polling
 
+function normalizeStopNavigateUrl(value, allowUndefined = false) {
+  if (value === undefined) {
+    return allowUndefined ? undefined : null;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function isValidNavigateUrl(url) {
+  return /^https?:\/\//i.test(url);
+}
+
 function normalizeDepartureTimesInput(departureTimes) {
   // Accept: array of strings OR a single comma/semicolon/newline-separated string.
   // Output: canonical array of 'HH:MM' strings (24h, zero padded), sorted, de-duped.
@@ -496,7 +517,12 @@ app.get('/api/stops', (req, res) => {
 
 // Add a new stop
 app.post('/api/stops', basicAuth, (req, res) => {
-  const { name, lat, lon, routeId, order } = req.body;
+  const { name, lat, lon, routeId, order, googleMapsNavigateUrl } = req.body;
+  const normalizedNavigateUrl = normalizeStopNavigateUrl(googleMapsNavigateUrl);
+  if (normalizedNavigateUrl && !isValidNavigateUrl(normalizedNavigateUrl)) {
+    return res.status(400).json({ error: 'googleMapsNavigateUrl must start with http:// or https://' });
+  }
+
   const stop = {
     id: `stop-${Date.now()}`,
     name,
@@ -504,6 +530,7 @@ app.post('/api/stops', basicAuth, (req, res) => {
     lon,
     routeId,
     order: order || 0,
+    googleMapsNavigateUrl: normalizedNavigateUrl,
     createdAt: new Date().toISOString()
   };
   stops.push(stop);
@@ -514,20 +541,28 @@ app.post('/api/stops', basicAuth, (req, res) => {
 // Update a stop
 app.put('/api/stops/:id', basicAuth, (req, res) => {
   const { id } = req.params;
-  const { name, lat, lon, routeId, order } = req.body;
+  const { name, lat, lon, routeId, order, googleMapsNavigateUrl } = req.body;
   const stopIndex = stops.findIndex(s => s.id === id);
   
   if (stopIndex === -1) {
     return res.status(404).json({ error: 'Stop not found' });
   }
   
+  const normalizedNavigateUrl = normalizeStopNavigateUrl(googleMapsNavigateUrl, true);
+  if (normalizedNavigateUrl && !isValidNavigateUrl(normalizedNavigateUrl)) {
+    return res.status(400).json({ error: 'googleMapsNavigateUrl must start with http:// or https://' });
+  }
+
   stops[stopIndex] = {
     ...stops[stopIndex],
     name: name || stops[stopIndex].name,
     lat: lat !== undefined ? lat : stops[stopIndex].lat,
     lon: lon !== undefined ? lon : stops[stopIndex].lon,
     routeId: routeId || stops[stopIndex].routeId,
-    order: order !== undefined ? order : stops[stopIndex].order
+    order: order !== undefined ? order : stops[stopIndex].order,
+    googleMapsNavigateUrl: normalizedNavigateUrl !== undefined
+      ? normalizedNavigateUrl
+      : (stops[stopIndex].googleMapsNavigateUrl || null)
   };
   
   dataChanged = true;
@@ -556,8 +591,17 @@ app.post('/api/stops/bulk', basicAuth, (req, res) => {
     return res.status(400).json({ error: 'Invalid stops data' });
   }
   
+  for (let index = 0; index < stopsToAdd.length; index++) {
+    const normalizedNavigateUrl = normalizeStopNavigateUrl(stopsToAdd[index].googleMapsNavigateUrl);
+    if (normalizedNavigateUrl && !isValidNavigateUrl(normalizedNavigateUrl)) {
+      return res.status(400).json({ error: `Invalid googleMapsNavigateUrl for stop index ${index}` });
+    }
+  }
+
   const addedStops = [];
   stopsToAdd.forEach((stopData, index) => {
+    const normalizedNavigateUrl = normalizeStopNavigateUrl(stopData.googleMapsNavigateUrl);
+
     const stop = {
       id: `stop-${Date.now()}-${index}`,
       name: stopData.name,
@@ -565,6 +609,7 @@ app.post('/api/stops/bulk', basicAuth, (req, res) => {
       lon: stopData.lon,
       routeId: stopData.routeId,
       order: stopData.order || 0,
+      googleMapsNavigateUrl: normalizedNavigateUrl,
       createdAt: new Date().toISOString()
     };
     stops.push(stop);
@@ -601,6 +646,7 @@ app.post('/api/routes/:routeId/create-stops', basicAuth, (req, res) => {
       lon: point[1],
       routeId: routeId,
       order: index + 1,
+      googleMapsNavigateUrl: null,
       createdAt: new Date().toISOString()
     };
     stops.push(stop);
@@ -1482,6 +1528,7 @@ app.post('/api/import/google-maps', upload.single('file'), basicAuth, (req, res)
           lon: stop.lon,
           routeId: stop.routeId || null,
           order: stop.order,
+          googleMapsNavigateUrl: null,
           createdAt: new Date().toISOString()
         };
         stops.push(newStop);

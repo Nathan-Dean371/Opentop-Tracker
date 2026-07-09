@@ -541,6 +541,35 @@ body.admin-page #map {
   font-size: 0.9rem;
 }
 
+.floating-stop-info__action-row {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+
+.floating-stop-info__action-row--hidden {
+  display: none;
+}
+
+.floating-stop-info__action-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 38px;
+  border-radius: 9px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.floating-stop-info__action-link:hover {
+  background: #dbeafe;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

@@ -164,6 +164,10 @@
                             <label for="stopLon">Longitude</label>
                             <input type="number" step="0.000001" id="stopLon" required>
                         </div>
+                        <div class="form-group">
+                            <label for="stopGoogleMapsNavigateUrl">Google Maps Navigate URL</label>
+                            <input type="url" id="stopGoogleMapsNavigateUrl" placeholder="https://maps.google.com/...">
+                        </div>
                         <button type="submit" class="btn btn-success">Add Stop</button>
                         <button type="button" class="btn btn-secondary" onclick="useMapForStop()">Pick from Map</button>
                     </form>
@@ -241,6 +245,7 @@
                             <th>Route</th>
                             <th>Order</th>
                             <th>Location</th>
+                            <th>Navigate</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -673,7 +678,8 @@
                 routeId: document.getElementById('stopRoute').value,
                 order: parseInt(document.getElementById('stopOrder').value),
                 lat: parseFloat(document.getElementById('stopLat').value),
-                lon: parseFloat(document.getElementById('stopLon').value)
+                lon: parseFloat(document.getElementById('stopLon').value),
+                googleMapsNavigateUrl: document.getElementById('stopGoogleMapsNavigateUrl').value.trim() || null
             };
             
             try {
@@ -1164,12 +1170,15 @@
 
                 const color = getRouteThemeColor(route || stop, stop.order || 0);
                 const safeId = String(stop.id).replace(/'/g, "\\'");
+                const navigateUrl = typeof stop.googleMapsNavigateUrl === 'string' ? stop.googleMapsNavigateUrl.trim() : '';
+                const safeNavigateUrl = navigateUrl.replace(/"/g, '&quot;');
                 const marker = L.marker([stop.lat, stop.lon], { icon: getStopIcon(color) })
                     .addTo(stopMap)
                     .bindPopup(`
                         <b>${stop.name}</b><br>
                         Route: ${route ? route.name : 'N/A'}<br>
                         Stop #${stop.order}<br>
+                        Navigate: ${navigateUrl ? '<a href="' + safeNavigateUrl + '" target="_blank" rel="noopener noreferrer">Open</a>' : 'N/A'}<br>
                         <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
                             <button type="button" class="btn btn-primary btn-small" onclick="editStop('${safeId}')">Edit</button>
                             <button type="button" class="btn btn-danger btn-small" onclick="deleteStop('${safeId}')">Delete</button>
@@ -1181,6 +1190,7 @@
                     document.getElementById('stopName').value = stop.name;
                     document.getElementById('stopLat').value = stop.lat.toFixed(6);
                     document.getElementById('stopLon').value = stop.lon.toFixed(6);
+                    document.getElementById('stopGoogleMapsNavigateUrl').value = stop.googleMapsNavigateUrl || '';
                     if (stop.routeId) {
                         document.getElementById('stopRoute').value = stop.routeId;
                     }
@@ -1214,6 +1224,10 @@
             const tbody = document.querySelector('#stopsTable tbody');
             tbody.innerHTML = filteredStops.map(stop => {
                 const route = routes.find(r => r.id === stop.routeId);
+                const navigateUrl = (typeof stop.googleMapsNavigateUrl === 'string' && stop.googleMapsNavigateUrl.trim())
+                    ? stop.googleMapsNavigateUrl.trim()
+                    : '';
+                const safeNavigateUrl = navigateUrl.replace(/"/g, '&quot;');
                 return `
                     <tr>
                         <td><input type="checkbox" class="stop-checkbox" data-stop-id="${stop.id}" onchange="updateStopSelection()"></td>
@@ -1221,6 +1235,7 @@
                         <td>${route ? route.name : 'N/A'}</td>
                         <td>${stop.order}</td>
                         <td>${stop.lat.toFixed(6)}, ${stop.lon.toFixed(6)}</td>
+                        <td>${navigateUrl ? `<a href="${safeNavigateUrl}" target="_blank" rel="noopener noreferrer">Open</a>` : 'N/A'}</td>
                         <td class="actions">
                             <button class="btn btn-primary" onclick="editStop('${stop.id}')">Edit</button>
                             <button class="btn btn-danger" onclick="deleteStop('${stop.id}')">Delete</button>
@@ -1798,6 +1813,9 @@
             
             const newOrder = prompt('Enter new stop order:', stop.order);
             if (newOrder === null) return; // Cancelled
+
+            const newNavigateUrl = prompt('Enter Google Maps Navigate URL (leave blank for none):', stop.googleMapsNavigateUrl || '');
+            if (newNavigateUrl === null) return; // Cancelled
             
             try {
                 const response = await fetch(`/api/stops/${id}`, {
@@ -1808,7 +1826,8 @@
                         routeId: stop.routeId,
                         order: parseInt(newOrder),
                         lat: stop.lat,
-                        lon: stop.lon
+                        lon: stop.lon,
+                        googleMapsNavigateUrl: newNavigateUrl.trim() || null
                     })
                 });
                 
