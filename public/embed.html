@@ -200,6 +200,7 @@
                         }
                         
         // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)
+        const BUS_MARKER_Z_INDEX_OFFSET = 10000;
         const busIcon = L.icon({
             iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
@@ -338,7 +339,7 @@
                         const to = L.latLng(lat, lon);
                         animateMarker(busMarkers[deviceId], to, 4900); // Animate over 4.9 seconds
                     } else {
-                        busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon })
+                        busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon, zIndexOffset: BUS_MARKER_Z_INDEX_OFFSET })
                             .addTo(map);
                         
                         // Center map on first bus

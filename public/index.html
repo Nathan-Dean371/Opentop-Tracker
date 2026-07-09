@@ -28,6 +28,13 @@
         </div>
         <div class="map-column">
             <div id="map"></div>
+            <div id="floatingStopInfo" class="floating-stop-info floating-stop-info--hidden" role="status" aria-live="polite">
+                <button id="floatingStopClose" class="floating-stop-info__close" type="button" aria-label="Close stop info">✕</button>
+                <div class="floating-stop-info__label">Selected Stop</div>
+                <h3 id="floatingStopTitle" class="floating-stop-info__title">Stop</h3>
+                <div class="floating-stop-info__meta-row"><span class="floating-stop-info__meta-key">Route</span><span id="floatingStopRoute" class="floating-stop-info__meta-value">N/A</span></div>
+                <div class="floating-stop-info__meta-row"><span class="floating-stop-info__meta-key">Stop</span><span id="floatingStopOrder" class="floating-stop-info__meta-value">N/A</span></div>
+            </div>
             <div class="map-legend" aria-label="Map legend">
                 <div class="map-legend__item">
                     <span class="legend-swatch legend-swatch--route"></span>
@@ -66,6 +73,7 @@
         let stops = [];
         let routes = [];
         let assignments = {};
+        let selectedStopId = null;
         const routeThemeColors = ['#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316'];
         const stopIconCache = new Map();
 
@@ -81,31 +89,72 @@
             return routeThemeColors[hash % routeThemeColors.length];
         }
 
-        function getStopIcon(color) {
-            if (stopIconCache.has(color)) {
-                return stopIconCache.get(color);
+        function getStopIcon(color, selected = false) {
+            const cacheKey = `${color}|${selected ? 'selected' : 'default'}`;
+            if (stopIconCache.has(cacheKey)) {
+                return stopIconCache.get(cacheKey);
             }
+
+            const iconSize = selected ? 48 : 40;
+            const iconAnchor = selected ? 24 : 20;
+            const outerRadius = selected ? 20 : 17;
+            const mainRadius = selected ? 19 : 16;
+            const centerRadius = selected ? 13 : 11;
+            const coreRadius = selected ? 6 : 5;
+            const pulseOpacity = selected ? 0.18 : 0.10;
+            const selectedStroke = selected
+                ? `<circle cx="20" cy="20" r="19" fill="none" stroke="#0f172a" stroke-width="2.5" stroke-dasharray="4 3" opacity="0.45" />`
+                : '';
 
             const icon = L.icon({
                 iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-                        <circle cx="20" cy="20" r="17" fill="rgba(15, 23, 42, 0.10)" />
-                        <circle cx="20" cy="20" r="16" fill="${color}" />
-                        <circle cx="20" cy="20" r="11" fill="white" opacity="0.96" />
-                        <circle cx="20" cy="20" r="5" fill="${color}" />
-                        <circle cx="20" cy="20" r="16" fill="none" stroke="white" stroke-width="2" />
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="${iconSize}" height="${iconSize}">
+                        <circle cx="20" cy="20" r="${outerRadius}" fill="rgba(15, 23, 42, ${pulseOpacity})" />
+                        <circle cx="20" cy="20" r="${mainRadius}" fill="${color}" />
+                        <circle cx="20" cy="20" r="${centerRadius}" fill="white" opacity="0.96" />
+                        <circle cx="20" cy="20" r="${coreRadius}" fill="${color}" />
+                        <circle cx="20" cy="20" r="${mainRadius}" fill="none" stroke="white" stroke-width="2" />
+                        ${selectedStroke}
                     </svg>
                 `),
-                iconSize: [40, 40],
-                iconAnchor: [20, 20],
+                iconSize: [iconSize, iconSize],
+                iconAnchor: [iconAnchor, iconAnchor],
                 popupAnchor: [0, -18]
             });
 
-            stopIconCache.set(color, icon);
+            stopIconCache.set(cacheKey, icon);
             return icon;
+        }
+
+        function updateSelectedStopIcon() {
+            stopMarkers.forEach(stopMarker => {
+                const { marker, routeColor, id } = stopMarker;
+                marker.setIcon(getStopIcon(routeColor, id === selectedStopId));
+            });
+        }
+
+        function showStopInfoPanel(stop, route) {
+            const panel = document.getElementById('floatingStopInfo');
+            const title = document.getElementById('floatingStopTitle');
+            const routeField = document.getElementById('floatingStopRoute');
+            const orderField = document.getElementById('floatingStopOrder');
+            if (!panel || !title || !routeField || !orderField) return;
+
+            title.textContent = stop.name || 'Unnamed stop';
+            routeField.textContent = route ? route.name : 'N/A';
+            orderField.textContent = stop.order != null ? `#${stop.order}` : 'N/A';
+            panel.classList.remove('floating-stop-info--hidden');
+        }
+
+        function clearStopSelection() {
+            selectedStopId = null;
+            updateSelectedStopIcon();
+            const panel = document.getElementById('floatingStopInfo');
+            if (panel) panel.classList.add('floating-stop-info--hidden');
         }
         
         // Custom bus icon (using data URI without btoa to avoid emoji encoding issues)
+        const BUS_MARKER_Z_INDEX_OFFSET = 10000;
         const busIcon = L.icon({
             iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
@@ -145,19 +194,6 @@
             }
             marker._animationFrameId = requestAnimationFrame(frame);
         }
-        
-        // Custom stop icon
-        const stopIcon = L.icon({
-            iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="30" height="30">
-                    <circle cx="12" cy="12" r="10" fill="#4CAF50" stroke="white" stroke-width="2"/>
-                    <text x="12" y="17" font-size="16" font-weight="bold" fill="white" text-anchor="middle">S</text>
-                </svg>
-            `),
-            iconSize: [30, 30],
-            iconAnchor: [15, 15],
-            popupAnchor: [0, -15]
-        });
         
         // Load and display routes
         async function loadRoutes() {
@@ -202,7 +238,7 @@
                 stops = await response.json();
                 
                 // Clear existing stop markers
-                stopMarkers.forEach(marker => map.removeLayer(marker));
+                stopMarkers.forEach(stopMarker => map.removeLayer(stopMarker.marker));
                 stopMarkers = [];
                 
                 // Only display stops whose routes are visible
@@ -211,17 +247,34 @@
                     const routeColor = getRouteThemeColor(route || stop, stop.order || 0);
                     // Only show stops if their route is visible (or has no route)
                     if (!route || route.visible !== false) {
-                        const marker = L.marker([stop.lat, stop.lon], { icon: getStopIcon(routeColor) })
-                            .addTo(map)
-                            .bindPopup(`
-                                <b>${stop.name}</b><br>
-                                Route: ${route ? route.name : 'N/A'}<br>
-                                Stop #${stop.order}
-                            `, { className: 'stop-popup' });
-                        
-                        stopMarkers.push(marker);
+                        const marker = L.marker([stop.lat, stop.lon], {
+                            icon: getStopIcon(routeColor, stop.id === selectedStopId)
+                        }).addTo(map);
+
+                        marker.on('click', () => {
+                            selectedStopId = stop.id;
+                            updateSelectedStopIcon();
+                            showStopInfoPanel(stop, route);
+                        });
+
+                        stopMarkers.push({
+                            id: stop.id,
+                            routeColor,
+                            marker
+                        });
                     }
                 });
+
+                if (selectedStopId) {
+                    const selectedStop = stops.find(stop => stop.id === selectedStopId);
+                    if (!selectedStop) {
+                        clearStopSelection();
+                    } else {
+                        const selectedRoute = routes.find(route => route.id === selectedStop.routeId);
+                        updateSelectedStopIcon();
+                        showStopInfoPanel(selectedStop, selectedRoute);
+                    }
+                }
             } catch (error) {
                 console.error('Error loading stops:', error);
             }
@@ -309,7 +362,7 @@
                         const to = L.latLng(lat, lon);
                         animateMarker(busMarkers[deviceId], to, 4900); // Animate over 4.9 seconds
                     } else {
-                        const marker = L.marker([lat, lon], { icon: busIcon })
+                        const marker = L.marker([lat, lon], { icon: busIcon, zIndexOffset: BUS_MARKER_Z_INDEX_OFFSET })
                             .addTo(map)
                             .bindPopup(`<b>${busName}</b>`);
 
@@ -596,11 +649,15 @@
         document.addEventListener('click', (ev) => {
             const close = document.getElementById('etaClose');
             if (ev.target === close) hideNextStopBar();
+            if (ev.target && ev.target.id === 'floatingStopClose') clearStopSelection();
         });
 
-        // Hide ETA when clicking on the map (but allow marker clicks to override)
+        // Hide ETA and clear selected stop when clicking on the map background
         if (typeof map !== 'undefined') {
-            map.on && map.on('click', () => hideNextStopBar());
+            map.on && map.on('click', () => {
+                hideNextStopBar();
+                clearStopSelection();
+            });
         }
 
         // Listen for admin test bus events via localStorage so main view shows the ETA pill
@@ -629,7 +686,7 @@
                     if (busMarkers[deviceId]) {
                         busMarkers[deviceId].setLatLng([lat, lon]);
                     } else {
-                        busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon }).addTo(map).bindPopup(`<b>Admin Test Bus</b>`);
+                        busMarkers[deviceId] = L.marker([lat, lon], { icon: busIcon, zIndexOffset: BUS_MARKER_Z_INDEX_OFFSET }).addTo(map).bindPopup(`<b>Admin Test Bus</b>`);
                     }
                 }
             } catch (error) {

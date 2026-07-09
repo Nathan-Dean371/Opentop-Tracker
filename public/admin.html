@@ -1370,6 +1370,7 @@
         // --- Admin test-bus helpers (admin-only) ---
         const adminTestLocations = {};
         const adminBusMarkers = {};
+        const BUS_MARKER_Z_INDEX_OFFSET = 10000;
 
         // simple bus icon for admin
         const adminBusIcon = L.icon({
@@ -1418,7 +1419,7 @@
 
             // place marker on admin map
             if (adminBusMarkers[deviceId]) { map.removeLayer(adminBusMarkers[deviceId]); }
-            const m = L.marker([startStop.lat, startStop.lon], { icon: adminBusIcon })
+            const m = L.marker([startStop.lat, startStop.lon], { icon: adminBusIcon, zIndexOffset: BUS_MARKER_Z_INDEX_OFFSET })
                 .addTo(map)
                 .bindPopup(`<b>Admin Test Bus</b><br>At: ${startStop.name || 'Stop'}`);
             adminBusMarkers[deviceId] = m;

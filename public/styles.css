@@ -465,6 +465,80 @@ body.admin-page #map {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  position: relative;
+}
+
+.floating-stop-info {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: min(320px, calc(100% - 28px));
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 14px;
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(6px);
+  padding: 14px 14px 12px;
+  z-index: 900;
+}
+
+.floating-stop-info--hidden {
+  display: none;
+}
+
+.floating-stop-info__close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text-dark);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.floating-stop-info__label {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.floating-stop-info__title {
+  margin: 0 0 10px;
+  color: var(--text-dark);
+  font-size: 1.15rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  padding-right: 28px;
+}
+
+.floating-stop-info__meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+  margin-top: 9px;
+}
+
+.floating-stop-info__meta-key {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+
+.floating-stop-info__meta-value {
+  color: var(--text-dark);
+  font-weight: 700;
+  font-size: 0.9rem;
 }
 
 table {
@@ -814,6 +888,13 @@ code {
   body.dashboard-page #map {
     height: 360px;
     min-height: 360px;
+  }
+
+  .floating-stop-info {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    top: 12px;
   }
 
   .nav {
