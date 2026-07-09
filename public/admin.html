@@ -235,6 +235,7 @@
                                 <option value="">Select a route</option>
                             </select>
                         </div>
+                        <button class="btn btn-primary" onclick="bulkGenerateSelectedStopNavigateUrls()">Generate Maps Links</button>
                         <button class="btn btn-success" onclick="bulkAssignStopsToRoute()">Assign Selected</button>
                         <button class="btn btn-secondary" onclick="clearStopSelection()">Clear Selection</button>
                     </div>
@@ -1782,10 +1783,61 @@
                 return;
             }
 
-            const destination = `${lat.toFixed(6)},${lon.toFixed(6)}`;
-            const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=walking`;
+            const url = buildGoogleMapsWalkingUrl(lat, lon);
             navigateInput.value = url;
             showAlert('Google Maps navigation link generated.', 'success');
+        }
+
+        function buildGoogleMapsWalkingUrl(lat, lon) {
+            const destination = `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
+            return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=walking`;
+        }
+
+        async function bulkGenerateSelectedStopNavigateUrls() {
+            const checkboxes = document.querySelectorAll('.stop-checkbox:checked');
+            const stopIds = Array.from(checkboxes).map(cb => cb.dataset.stopId);
+
+            if (stopIds.length === 0) {
+                showAlert('No stops selected', 'error');
+                return;
+            }
+
+            if (!confirm(`Generate Google Maps links for ${stopIds.length} selected stop(s)?`)) {
+                return;
+            }
+
+            try {
+                let successCount = 0;
+                for (const stopId of stopIds) {
+                    const stop = stops.find(s => s.id === stopId);
+                    if (!stop || !Number.isFinite(Number(stop.lat)) || !Number.isFinite(Number(stop.lon))) {
+                        continue;
+                    }
+
+                    const googleMapsNavigateUrl = buildGoogleMapsWalkingUrl(stop.lat, stop.lon);
+                    const response = await fetch(`/api/stops/${stopId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: stop.name,
+                            lat: stop.lat,
+                            lon: stop.lon,
+                            routeId: stop.routeId,
+                            order: stop.order,
+                            googleMapsNavigateUrl
+                        })
+                    });
+
+                    if (response.ok) {
+                        successCount++;
+                    }
+                }
+
+                showAlert(`Generated Google Maps links for ${successCount} stop(s).`);
+                loadStops();
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
         }
 
         // admin ETA close button
