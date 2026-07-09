@@ -183,6 +183,10 @@
                 align-items: stretch;
             }
 
+            body.has-selected-stop #info-cards {
+                bottom: 158px;
+            }
+
             .info-card {
                 width: 100%;
                 min-width: 0;
@@ -311,6 +315,7 @@
             }
 
             panel.classList.remove('floating-stop-info--hidden');
+            document.body.classList.add('has-selected-stop');
         }
 
         function clearStopSelection() {
@@ -318,6 +323,7 @@
             updateSelectedStopIcon();
             const panel = document.getElementById('floatingStopInfo');
             if (panel) panel.classList.add('floating-stop-info--hidden');
+            document.body.classList.remove('has-selected-stop');
         }
                 
                         function calculateSecondsUntil(departureMinutes) {
