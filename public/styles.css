@@ -469,10 +469,10 @@ body.admin-page #map {
 }
 
 .floating-stop-info {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  width: min(320px, calc(100% - 28px));
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: min(320px, calc(100% - 48px));
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(226, 232, 240, 0.95);
   border-radius: 14px;
@@ -893,8 +893,8 @@ code {
   .floating-stop-info {
     left: 12px;
     right: 12px;
+    bottom: 12px;
     width: auto;
-    top: 12px;
   }
 
   .nav {
