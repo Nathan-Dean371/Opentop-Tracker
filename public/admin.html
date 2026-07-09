@@ -167,6 +167,9 @@
                         <div class="form-group">
                             <label for="stopGoogleMapsNavigateUrl">Google Maps Navigate URL</label>
                             <input type="url" id="stopGoogleMapsNavigateUrl" placeholder="https://maps.google.com/...">
+                            <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button type="button" class="btn btn-secondary" onclick="generateStopGoogleMapsNavigateUrl()">Generate From Lat/Lon</button>
+                            </div>
                         </div>
                         <button type="submit" class="btn btn-success">Add Stop</button>
                         <button type="button" class="btn btn-secondary" onclick="useMapForStop()">Pick from Map</button>
@@ -1762,6 +1765,27 @@
         
         function useMapForStop() {
             showAlert('Click on the map to select a location for the stop', 'success');
+        }
+
+        function generateStopGoogleMapsNavigateUrl() {
+            const latInput = document.getElementById('stopLat');
+            const lonInput = document.getElementById('stopLon');
+            const navigateInput = document.getElementById('stopGoogleMapsNavigateUrl');
+
+            if (!latInput || !lonInput || !navigateInput) return;
+
+            const lat = parseFloat(latInput.value);
+            const lon = parseFloat(lonInput.value);
+
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                showAlert('Enter valid latitude and longitude first.', 'error');
+                return;
+            }
+
+            const destination = `${lat.toFixed(6)},${lon.toFixed(6)}`;
+            const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=walking`;
+            navigateInput.value = url;
+            showAlert('Google Maps navigation link generated.', 'success');
         }
 
         // admin ETA close button
