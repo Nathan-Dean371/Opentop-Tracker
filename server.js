@@ -409,6 +409,42 @@ app.get('/api/locations', (req, res) => {
   res.json(visibleLocations);
 });
 
+// Admin-only live locations (includes both public and debug buses)
+app.get('/api/admin/locations', basicAuth, (req, res) => {
+  const visibleLocations = {};
+
+  Object.keys(busLocations).forEach(trackerId => {
+    const location = busLocations[trackerId];
+    const busId = busAssignments[trackerId];
+
+    // Keep this admin feed focused on trackers that are assigned to a known bus.
+    if (!busId) {
+      return;
+    }
+
+    const bus = buses.find(b => b.id === busId);
+    if (!bus) {
+      return;
+    }
+
+    const routeId = busRouteAssignments[busId] || null;
+    const route = routeId ? routes.find(r => r.id === routeId) : null;
+
+    visibleLocations[trackerId] = {
+      ...location,
+      trackerId,
+      busId,
+      busName: bus.name || null,
+      busNumber: bus.number || null,
+      visibilityMode: normalizeBusVisibilityMode(bus.visibilityMode),
+      routeId,
+      routeName: route ? route.name : null
+    };
+  });
+
+  res.json(visibleLocations);
+});
+
 // Sample route data endpoint
 app.get('/api/routes', (req, res) => {
   res.json(routes);

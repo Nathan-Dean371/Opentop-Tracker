@@ -438,6 +438,8 @@
         let buses = [];
         let assignments = {};
         let trackers = [];
+        let adminLiveLocations = {};
+        const adminLiveBusMarkers = {};
 
         // Shared color + icon helpers (keep admin previews consistent with main map)
         const routeThemeColors = ['#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316'];
@@ -508,6 +510,109 @@
                 }
                 
                 stopMarker = L.marker([e.latlng.lat, e.latlng.lng]).addTo(stopMap);
+            });
+
+            // Keep admin map updated with all active trackers, including debug buses.
+            loadAdminLiveLocations();
+        }
+
+        const adminLivePublicBusIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+                    <circle cx="12" cy="12" r="11" fill="#FF5722" stroke="white" stroke-width="2"/>
+                    <rect x="7" y="8" width="10" height="8" rx="1" fill="white"/>
+                    <rect x="8" y="9" width="3" height="3" fill="#FF5722"/>
+                    <rect x="13" y="9" width="3" height="3" fill="#FF5722"/>
+                    <circle cx="9" cy="15" r="1" fill="#FF5722"/>
+                    <circle cx="15" cy="15" r="1" fill="#FF5722"/>
+                </svg>
+            `),
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+            popupAnchor: [0, -20]
+        });
+
+        const adminLiveDebugBusIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+                    <circle cx="12" cy="12" r="11" fill="#0ea5e9" stroke="white" stroke-width="2"/>
+                    <rect x="7" y="8" width="10" height="8" rx="1" fill="white"/>
+                    <rect x="8" y="9" width="3" height="3" fill="#0ea5e9"/>
+                    <rect x="13" y="9" width="3" height="3" fill="#0ea5e9"/>
+                    <circle cx="9" cy="15" r="1" fill="#0ea5e9"/>
+                    <circle cx="15" cy="15" r="1" fill="#0ea5e9"/>
+                    <text x="12" y="7" text-anchor="middle" font-size="5" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">D</text>
+                </svg>
+            `),
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+            popupAnchor: [0, -20]
+        });
+
+        async function loadAdminLiveLocations() {
+            try {
+                const response = await fetch('/api/admin/locations', { cache: 'no-store' });
+                if (!response.ok) {
+                    return;
+                }
+
+                adminLiveLocations = await response.json();
+                renderAdminLiveBusMarkers();
+            } catch (error) {
+                console.error('Error loading admin live locations:', error);
+            }
+        }
+
+        function renderAdminLiveBusMarkers() {
+            if (!map) return;
+
+            const activeTrackerIds = new Set(Object.keys(adminLiveLocations || {}));
+
+            // Remove stale markers
+            Object.keys(adminLiveBusMarkers).forEach(trackerId => {
+                if (!activeTrackerIds.has(trackerId)) {
+                    map.removeLayer(adminLiveBusMarkers[trackerId]);
+                    delete adminLiveBusMarkers[trackerId];
+                }
+            });
+
+            Object.entries(adminLiveLocations || {}).forEach(([trackerId, data]) => {
+                const lat = Number(data.lat);
+                const lon = Number(data.lon);
+                if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                    return;
+                }
+
+                const isDebug = String(data.visibilityMode || 'public').toLowerCase() === 'debug';
+                const icon = isDebug ? adminLiveDebugBusIcon : adminLivePublicBusIcon;
+                const label = data.busName
+                    ? `${data.busName}${data.busNumber ? ` (${data.busNumber})` : ''}`
+                    : `Tracker ${trackerId}`;
+                const modeLabel = isDebug ? 'Debug' : 'Public';
+                const routeLabel = data.routeName || 'Not assigned';
+                const updatedAgo = data.timestamp ? Math.max(0, Math.floor(Date.now() / 1000) - Number(data.timestamp)) : null;
+
+                const popupHtml = `
+                    <b>${label}</b><br>
+                    Tracker: ${trackerId}<br>
+                    Mode: ${modeLabel}<br>
+                    Route: ${routeLabel}<br>
+                    Updated: ${updatedAgo != null ? `${updatedAgo}s ago` : 'Unknown'}
+                `;
+
+                if (adminLiveBusMarkers[trackerId]) {
+                    adminLiveBusMarkers[trackerId].setLatLng([lat, lon]);
+                    adminLiveBusMarkers[trackerId].setIcon(icon);
+                    adminLiveBusMarkers[trackerId].setPopupContent(popupHtml);
+                } else {
+                    const marker = L.marker([lat, lon], {
+                        icon,
+                        zIndexOffset: isDebug ? 11000 : 10000
+                    }).addTo(map);
+
+                    marker.bindPopup(popupHtml);
+                    adminLiveBusMarkers[trackerId] = marker;
+                }
             });
         }
         
@@ -2057,6 +2162,7 @@
             loadBuses();
             loadAssignments();
             loadTrackers();
+            loadAdminLiveLocations();
 
             // Populate embed URL + code for the Embed tab
             const origin = window.location.origin;
@@ -2078,6 +2184,8 @@
             if (progressionRouteSelect) {
                 progressionRouteSelect.addEventListener('change', updateProgressionStopOptions);
             }
+
+            setInterval(loadAdminLiveLocations, 5000);
         });
     </script>
         <!-- Admin ETA bar -->
