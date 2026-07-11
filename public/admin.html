@@ -276,6 +276,13 @@
                         <input type="text" id="busTracker" placeholder="e.g., AB, 01, etc.">
                     </div>
                     <div class="form-group">
+                        <label for="busVisibilityMode">Bus Mode</label>
+                        <select id="busVisibilityMode">
+                            <option value="public" selected>Public (show on embed/live map)</option>
+                            <option value="debug">Debug (admin only)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label for="busDepartures">Departure Times (HH:MM, comma-separated)</label>
                         <input type="text" id="busDepartures" placeholder="e.g., 09:30, 11:00, 12:30" required>
                     </div>
@@ -301,6 +308,7 @@
                             <th>End</th>
                             <th>Number</th>
                             <th>Tracker ID</th>
+                            <th>Mode</th>
                             <th>Created</th>
                             <th>Actions</th>
                         </tr>
@@ -776,6 +784,7 @@
                 name: document.getElementById('busName').value,
                 number: document.getElementById('busNumber').value,
                 trackerId: document.getElementById('busTracker').value,
+                visibilityMode: document.getElementById('busVisibilityMode').value || 'public',
                 departureTimes,
                 operatingHours: {
                     start: document.getElementById('busOpStart').value || null,
@@ -1262,6 +1271,8 @@
                 tbody.innerHTML = buses.map(bus => {
                     const startDisp = bus.operatingHours && bus.operatingHours.start ? formatTimeDisplay(bus.operatingHours.start) : null;
                     const endDisp = bus.operatingHours && bus.operatingHours.end ? formatTimeDisplay(bus.operatingHours.end) : null;
+                    const visibilityMode = String(bus.visibilityMode || 'public').toLowerCase() === 'debug' ? 'debug' : 'public';
+                    const visibilityLabel = visibilityMode === 'debug' ? 'Debug only' : 'Public';
 
                     return `
                     <tr>
@@ -1270,6 +1281,7 @@
                         <td>${endDisp || 'Always'}</td>
                         <td>${bus.number}</td>
                         <td>${bus.trackerId || 'Not assigned'}</td>
+                        <td>${visibilityLabel}</td>
                         <td>${new Date(bus.createdAt).toLocaleDateString()}</td>
                         <td class="actions">
                             <button class="btn btn-primary" onclick="editBus('${bus.id}')">Edit</button>
@@ -1352,13 +1364,14 @@
                 const statusClass = tracker.status === 'active' ? 'status active' : 'status inactive';
                 const lastSeen = tracker.lastSeen ? new Date(tracker.lastSeen).toLocaleString() : 'Never';
                 const ageText = tracker.ageSeconds != null ? `${tracker.ageSeconds}s ago` : '—';
+                const busModeLabel = tracker.busVisibilityMode === 'debug' ? ' [debug]' : '';
                 const busLabel = tracker.busName
-                    ? `${tracker.busName}${tracker.busNumber ? ` (${tracker.busNumber})` : ''}`
+                    ? `${tracker.busName}${tracker.busNumber ? ` (${tracker.busNumber})` : ''}${busModeLabel}`
                     : 'Not assigned';
 
                 const busOptions = buses.map(bus => `
                     <option value="${bus.id}" ${bus.id === tracker.busId ? 'selected' : ''}>
-                        ${bus.name} (${bus.number})
+                        ${bus.name} (${bus.number})${(String(bus.visibilityMode || 'public').toLowerCase() === 'debug') ? ' [debug]' : ''}
                     </option>
                 `).join('');
 
@@ -1607,6 +1620,11 @@
             const newTracker = prompt('Enter new tracker ID (leave blank to keep):', bus.trackerId || '');
             if (newTracker === null) return; // cancelled
 
+            const currentMode = String(bus.visibilityMode || 'public').toLowerCase() === 'debug' ? 'debug' : 'public';
+            const newMode = prompt('Bus mode (public or debug):', currentMode);
+            if (newMode === null) return; // cancelled
+            const normalizedMode = String(newMode || '').trim().toLowerCase() === 'debug' ? 'debug' : 'public';
+
             const currentDepartures = Array.isArray(bus.departureTimes) ? bus.departureTimes.join(', ') : '';
             const departuresText = prompt('Departure times (HH:MM, comma-separated):', currentDepartures);
             if (departuresText === null) return; // cancelled
@@ -1634,6 +1652,7 @@
                         name: newName,
                         number: newNumber,
                         trackerId: newTracker || null,
+                        visibilityMode: normalizedMode,
                         departureTimes,
                         operatingHours: operatingHours
                     })

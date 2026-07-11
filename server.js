@@ -107,6 +107,14 @@ const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "r
 const FORWARD_ADVANCE_MARGIN_METERS = 120; // next stop must be meaningfully closer before auto-advance
 const MIN_AUTO_ADVANCE_INTERVAL_MS = 20000; // prevent rapid multi-stop jumps from sparse polling
 
+function normalizeBusVisibilityMode(value) {
+  return String(value || '').toLowerCase() === 'debug' ? 'debug' : 'public';
+}
+
+function isPublicBus(bus) {
+  return normalizeBusVisibilityMode(bus && bus.visibilityMode) === 'public';
+}
+
 function normalizeStopNavigateUrl(value, allowUndefined = false) {
   if (value === undefined) {
     return allowUndefined ? undefined : null;
@@ -224,6 +232,12 @@ function loadData() {
             } else {
               // Explicitly store empty list for older data files (no fallback to defaults)
               b.departureTimes = [];
+              migrated = true;
+            }
+
+            const normalizedVisibilityMode = normalizeBusVisibilityMode(b.visibilityMode);
+            if (b.visibilityMode !== normalizedVisibilityMode) {
+              b.visibilityMode = normalizedVisibilityMode;
               migrated = true;
             }
           }
@@ -372,6 +386,10 @@ app.get('/api/locations', (req, res) => {
 
     const bus = buses.find(b => b.id === busId);
     if (!bus) {
+      return;
+    }
+
+    if (!isPublicBus(bus)) {
       return;
     }
 
@@ -667,7 +685,7 @@ app.get('/api/buses', (req, res) => {
 
 // Add a new bus
 app.post('/api/buses', basicAuth, (req, res) => {
-  const { name, number, trackerId, operatingHours, departureTimes } = req.body;
+  const { name, number, trackerId, operatingHours, departureTimes, visibilityMode } = req.body;
 
   const normalizedDepartureTimes = normalizeDepartureTimesInput(departureTimes);
   if (!Array.isArray(normalizedDepartureTimes) || normalizedDepartureTimes.length === 0) {
@@ -688,6 +706,7 @@ app.post('/api/buses', basicAuth, (req, res) => {
     name,
     number,
     trackerId,
+    visibilityMode: normalizeBusVisibilityMode(visibilityMode),
     departureTimes: normalizedDepartureTimes,
     operatingHours: storedOperatingHours, // { start: 'HH:MM', end: 'HH:MM' } or null
     createdAt: new Date().toISOString()
@@ -705,7 +724,7 @@ app.post('/api/buses', basicAuth, (req, res) => {
 // Update a bus
 app.put('/api/buses/:id', basicAuth, (req, res) => {
   const { id } = req.params;
-  const { name, number, trackerId, operatingHours, departureTimes } = req.body;
+  const { name, number, trackerId, operatingHours, departureTimes, visibilityMode } = req.body;
   const busIndex = buses.findIndex(b => b.id === id);
   
   if (busIndex === -1) {
@@ -739,11 +758,17 @@ app.put('/api/buses/:id', basicAuth, (req, res) => {
     newDepartureTimes = normalized;
   }
 
+  let newVisibilityMode = buses[busIndex].visibilityMode;
+  if (visibilityMode !== undefined) {
+    newVisibilityMode = normalizeBusVisibilityMode(visibilityMode);
+  }
+
   buses[busIndex] = {
     ...buses[busIndex],
     name: name || buses[busIndex].name,
     number: number || buses[busIndex].number,
     trackerId: trackerId || buses[busIndex].trackerId,
+    visibilityMode: newVisibilityMode,
     departureTimes: newDepartureTimes,
     operatingHours: newOperatingHours
   };
@@ -815,7 +840,8 @@ app.get('/api/trackers', (req, res) => {
       ageSeconds,
       busId,
       busName: bus ? bus.name : null,
-      busNumber: bus ? bus.number : null
+      busNumber: bus ? bus.number : null,
+      busVisibilityMode: bus ? normalizeBusVisibilityMode(bus.visibilityMode) : null
     });
   });
 
@@ -1582,6 +1608,10 @@ app.get('/health', (req, res) => {
 
     const bus = buses.find(b => b.id === busId);
     if (!bus) {
+      return;
+    }
+
+    if (!isPublicBus(bus)) {
       return;
     }
 
