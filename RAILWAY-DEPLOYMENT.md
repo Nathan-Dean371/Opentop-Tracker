@@ -98,3 +98,77 @@ For production use, consider:
 - Setting up persistent storage (database)
 - Implementing SSL cert (Railway provides this free)
 - Adding monitoring/alerting
+
+## MQTT Broker Setup (Recommended Migration Path)
+
+Use this when migrating from HTTP OwnTracks to MQTT while keeping `/owntracks` available during rollout.
+
+### 1) Add a Second Service for Mosquitto
+
+1. In Railway project, click **New Service**
+2. Choose **Deploy from Docker Image**
+3. Image: `eclipse-mosquitto:2`
+4. Name it: `opentop-mqtt`
+
+### 2) Add a Volume to the MQTT Service
+
+If Railway only allows one mount target, mount a single volume at:
+
+- `/mosquitto`
+
+Then place broker files inside subfolders:
+
+- `/mosquitto/config`
+- `/mosquitto/data`
+- `/mosquitto/log`
+- `/mosquitto/certs`
+
+This works with the provided Mosquitto template config.
+
+If you mount only `/mosquitto/config`, the broker still runs, but message persistence/logs are not persisted.
+
+### 3) Provide Mosquitto Config and Password File
+
+Use the templates in this repo:
+
+- `deploy/mosquitto/mosquitto.conf`
+- `deploy/mosquitto/passwords.example`
+
+Generate your real password file with:
+
+`mosquitto_passwd -c /mosquitto/config/passwords owntracks_device`
+
+Then add backend credentials similarly:
+
+`mosquitto_passwd /mosquitto/config/passwords opentop_backend`
+
+### 4) Configure TLS (Required for Production)
+
+In `deploy/mosquitto/mosquitto.conf`, set:
+
+- `cafile`
+- `certfile`
+- `keyfile`
+
+Point them to real cert/key files mounted in the service (for example under `/mosquitto/certs`).
+
+### 5) Expose MQTT Port
+
+Create a TCP endpoint for broker port `8883` in Railway so devices can connect.
+
+### 6) Wire Node Service to Broker
+
+In your Node service variables set:
+
+- `MQTT_BROKER_URL=mqtts://<broker-host>:8883`
+- `MQTT_TOPIC=owntracks/+/+`
+- `MQTT_CLIENT_ID=opentop-backend`
+- `MQTT_USERNAME=opentop_backend`
+- `MQTT_PASSWORD=<backend-password>`
+
+### 7) Keep HTTP On During Rollout
+
+Do not disable HTTP OwnTracks endpoint until all trackers are seen via MQTT source telemetry:
+
+- `/api/trackers`
+- `/api/admin/ingestion` (admin auth required)

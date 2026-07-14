@@ -3,12 +3,13 @@ const cors = require('cors');
 const path = require('path');
 const multer = require('multer');
 const fs = require('fs');
+const mqtt = require('mqtt');
 
 const app = express();
 // These endpoints are real-time and clients expect JSON bodies.
 // Disable ETag/304 caching to avoid empty-body 304 responses.
 app.set('etag', false);
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3100;
 
 // Prevent intermediary/proxy caching for API + webhook endpoints
 app.use((req, res, next) => {
@@ -78,6 +79,26 @@ const LOCATION_MAX_STALE_SECONDS = Number.isFinite(parseInt(process.env.LOCATION
 const LOCATION_MAX_OUT_OF_ORDER_SECONDS = Number.isFinite(parseInt(process.env.LOCATION_MAX_OUT_OF_ORDER_SECONDS, 10))
   ? parseInt(process.env.LOCATION_MAX_OUT_OF_ORDER_SECONDS, 10)
   : 30;
+
+// MQTT ingestion (optional, enabled when MQTT_BROKER_URL is set)
+const MQTT_BROKER_URL = (process.env.MQTT_BROKER_URL || '').trim();
+const MQTT_TOPIC = (process.env.MQTT_TOPIC || 'owntracks/+/+').trim();
+const MQTT_CLIENT_ID = (process.env.MQTT_CLIENT_ID || `opentop-backend-${Math.random().toString(16).slice(2, 10)}`).trim();
+const MQTT_USERNAME = process.env.MQTT_USERNAME;
+const MQTT_PASSWORD = process.env.MQTT_PASSWORD;
+
+let mqttClient = null;
+const mqttState = {
+  enabled: Boolean(MQTT_BROKER_URL),
+  connected: false,
+  topic: MQTT_TOPIC,
+  received: 0,
+  accepted: 0,
+  dropped: 0,
+  parseErrors: 0,
+  lastMessageAt: null,
+  lastError: null
+};
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -293,6 +314,158 @@ setInterval(() => {
 // Load data on startup
 loadData();
 
+function ingestOwnTracksLocation(data, source = 'http', sourceRef = null) {
+  if (!data || typeof data !== 'object') {
+    return { accepted: false, reason: 'invalid_payload' };
+  }
+
+  if (data._type !== 'location') {
+    return { accepted: false, reason: 'not_location' };
+  }
+
+  const deviceId = data.tid || 'default';
+  const lat = Number(data.lat);
+  const lon = Number(data.lon);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return { accepted: false, reason: 'invalid_coordinates' };
+  }
+
+  const receivedAtSeconds = Math.floor(Date.now() / 1000);
+  const deviceTimestamp = Number.isFinite(parseInt(data.tst, 10)) ? parseInt(data.tst, 10) : null;
+
+  // Reject stale/backfilled points (e.g., store-and-forward queue dumps)
+  if (deviceTimestamp != null) {
+    const stalenessSeconds = receivedAtSeconds - deviceTimestamp;
+    if (stalenessSeconds > LOCATION_MAX_STALE_SECONDS) {
+      console.warn(
+        `🧹 Ignoring stale ${source} location for ${deviceId} (stale by ${stalenessSeconds}s > ${LOCATION_MAX_STALE_SECONDS}s)`
+      );
+      return { accepted: false, reason: 'stale' };
+    }
+  }
+
+  // Reject out-of-order points beyond a small jitter allowance
+  const prev = busLocations[deviceId];
+  const prevDeviceTimestamp = prev && Number.isFinite(parseInt(prev.deviceTimestamp, 10))
+    ? parseInt(prev.deviceTimestamp, 10)
+    : (prev && Number.isFinite(parseInt(prev.timestamp, 10)) ? parseInt(prev.timestamp, 10) : null);
+
+  if (deviceTimestamp != null && prevDeviceTimestamp != null) {
+    if (deviceTimestamp < (prevDeviceTimestamp - LOCATION_MAX_OUT_OF_ORDER_SECONDS)) {
+      console.warn(
+        `⏪ Ignoring out-of-order ${source} location for ${deviceId} (tst=${deviceTimestamp} < prev=${prevDeviceTimestamp} - ${LOCATION_MAX_OUT_OF_ORDER_SECONDS}s)`
+      );
+      return { accepted: false, reason: 'out_of_order' };
+    }
+  }
+
+  // During dual-ingestion migration, the same location may arrive via both HTTP and MQTT.
+  // Drop exact duplicates to avoid churn in telemetry.
+  if (
+    prev &&
+    deviceTimestamp != null &&
+    prev.deviceTimestamp != null &&
+    Number(prev.deviceTimestamp) === deviceTimestamp &&
+    Number(prev.lat) === lat &&
+    Number(prev.lon) === lon
+  ) {
+    return { accepted: false, reason: 'duplicate' };
+  }
+
+  busLocations[deviceId] = {
+    lat,
+    lon,
+    // Use server receive time for freshness/"Updated ... ago" calculations
+    timestamp: receivedAtSeconds,
+    // Preserve device timestamp separately for debugging/inspection
+    deviceTimestamp,
+    receivedAt: receivedAtSeconds,
+    battery: data.batt,
+    accuracy: data.acc,
+    velocity: data.vel,
+    altitude: data.alt,
+    source,
+    sourceRef: sourceRef || null
+  };
+
+  console.log(`Location update accepted for device ${deviceId} via ${source}:`, busLocations[deviceId]);
+  return { accepted: true, reason: 'accepted' };
+}
+
+function setupMqttIngestion() {
+  if (!MQTT_BROKER_URL) {
+    console.log('ℹ️ MQTT ingestion disabled (MQTT_BROKER_URL not set). HTTP /owntracks remains active.');
+    return;
+  }
+
+  const options = {
+    clientId: MQTT_CLIENT_ID,
+    reconnectPeriod: 5000
+  };
+
+  if (MQTT_USERNAME) {
+    options.username = MQTT_USERNAME;
+  }
+
+  if (MQTT_PASSWORD) {
+    options.password = MQTT_PASSWORD;
+  }
+
+  mqttClient = mqtt.connect(MQTT_BROKER_URL, options);
+
+  mqttClient.on('connect', () => {
+    mqttState.connected = true;
+    mqttState.lastError = null;
+    console.log(`✅ Connected to MQTT broker at ${MQTT_BROKER_URL}`);
+    mqttClient.subscribe(MQTT_TOPIC, (err) => {
+      if (err) {
+        mqttState.lastError = err.message;
+        console.error(`⚠️ Failed to subscribe to MQTT topic ${MQTT_TOPIC}:`, err.message);
+        return;
+      }
+      console.log(`📡 Subscribed to MQTT topic: ${MQTT_TOPIC}`);
+    });
+  });
+
+  mqttClient.on('reconnect', () => {
+    mqttState.connected = false;
+    console.log('🔄 Reconnecting to MQTT broker...');
+  });
+
+  mqttClient.on('error', (error) => {
+    mqttState.lastError = error.message;
+    console.error('⚠️ MQTT client error:', error.message);
+  });
+
+  mqttClient.on('offline', () => {
+    mqttState.connected = false;
+    console.warn('⚠️ MQTT client is offline');
+  });
+
+  mqttClient.on('message', (topic, message) => {
+    mqttState.received += 1;
+    mqttState.lastMessageAt = new Date().toISOString();
+
+    let payload = null;
+    try {
+      payload = JSON.parse(message.toString());
+    } catch (error) {
+      mqttState.parseErrors += 1;
+      mqttState.dropped += 1;
+      console.warn('⚠️ MQTT message parse failed:', error.message);
+      return;
+    }
+
+    const result = ingestOwnTracksLocation(payload, 'mqtt', topic);
+    if (result.accepted) {
+      mqttState.accepted += 1;
+    } else {
+      mqttState.dropped += 1;
+    }
+  });
+}
+
 // OwnTracks webhook endpoint
 app.get(['/owntracks', '/owntracks/'], (req, res) => {
   res.status(200).json({ success: true, message: 'OwnTracks endpoint ready. Send POST with JSON body.' });
@@ -313,56 +486,8 @@ app.post(['/owntracks', '/owntracks/'], (req, res) => {
   if (!data || typeof data !== 'object') {
     return res.status(200).end();
   }
-  
-  // OwnTracks sends location data in this format
-  if (data._type === 'location') {
-    const deviceId = data.tid || 'default';
 
-    const receivedAtSeconds = Math.floor(Date.now() / 1000);
-    const deviceTimestamp = Number.isFinite(parseInt(data.tst, 10)) ? parseInt(data.tst, 10) : null;
-
-    // Reject stale/backfilled points (e.g., store-and-forward queue dumps)
-    if (deviceTimestamp != null) {
-      const stalenessSeconds = receivedAtSeconds - deviceTimestamp;
-      if (stalenessSeconds > LOCATION_MAX_STALE_SECONDS) {
-        console.warn(
-          `🧹 Ignoring stale location for ${deviceId} (stale by ${stalenessSeconds}s > ${LOCATION_MAX_STALE_SECONDS}s)`
-        );
-        return res.status(200).end();
-      }
-    }
-
-    // Reject out-of-order points beyond a small jitter allowance
-    const prev = busLocations[deviceId];
-    const prevDeviceTimestamp = prev && Number.isFinite(parseInt(prev.deviceTimestamp, 10))
-      ? parseInt(prev.deviceTimestamp, 10)
-      : (prev && Number.isFinite(parseInt(prev.timestamp, 10)) ? parseInt(prev.timestamp, 10) : null);
-
-    if (deviceTimestamp != null && prevDeviceTimestamp != null) {
-      if (deviceTimestamp < (prevDeviceTimestamp - LOCATION_MAX_OUT_OF_ORDER_SECONDS)) {
-        console.warn(
-          `⏪ Ignoring out-of-order location for ${deviceId} (tst=${deviceTimestamp} < prev=${prevDeviceTimestamp} - ${LOCATION_MAX_OUT_OF_ORDER_SECONDS}s)`
-        );
-        return res.status(200).end();
-      }
-    }
-
-    busLocations[deviceId] = {
-      lat: data.lat,
-      lon: data.lon,
-      // Use server receive time for freshness/"Updated ... ago" calculations
-      timestamp: receivedAtSeconds,
-      // Preserve device timestamp separately for debugging/inspection
-      deviceTimestamp,
-      receivedAt: receivedAtSeconds,
-      battery: data.batt,
-      accuracy: data.acc,
-      velocity: data.vel,
-      altitude: data.alt
-    };
-
-    console.log(`Location update accepted for device ${deviceId}:`, busLocations[deviceId]);
-  }
+  ingestOwnTracksLocation(data, 'http');
   
   res.status(200).json([]);
 });
@@ -877,11 +1002,51 @@ app.get('/api/trackers', (req, res) => {
       busId,
       busName: bus ? bus.name : null,
       busNumber: bus ? bus.number : null,
-      busVisibilityMode: bus ? normalizeBusVisibilityMode(bus.visibilityMode) : null
+      busVisibilityMode: bus ? normalizeBusVisibilityMode(bus.visibilityMode) : null,
+      source: loc && loc.source ? loc.source : null,
+      sourceRef: loc && loc.sourceRef ? loc.sourceRef : null,
+      deviceTimestamp: loc && Number.isFinite(Number(loc.deviceTimestamp)) ? Number(loc.deviceTimestamp) : null,
+      receivedAt: loc && Number.isFinite(Number(loc.receivedAt)) ? Number(loc.receivedAt) : null
     });
   });
 
   res.json(trackers);
+});
+
+// Admin-only ingestion telemetry for migration monitoring
+app.get('/api/admin/ingestion', basicAuth, (req, res) => {
+  const trackersBySource = {
+    http: [],
+    mqtt: [],
+    unknown: []
+  };
+
+  Object.keys(busLocations).forEach(trackerId => {
+    const loc = busLocations[trackerId] || {};
+    const source = loc.source === 'mqtt' ? 'mqtt' : (loc.source === 'http' ? 'http' : 'unknown');
+    trackersBySource[source].push({
+      trackerId,
+      source,
+      sourceRef: loc.sourceRef || null,
+      timestamp: loc.timestamp || null,
+      deviceTimestamp: loc.deviceTimestamp || null,
+      lat: Number.isFinite(Number(loc.lat)) ? Number(loc.lat) : null,
+      lon: Number.isFinite(Number(loc.lon)) ? Number(loc.lon) : null
+    });
+  });
+
+  res.json({
+    mqtt: {
+      ...mqttState
+    },
+    trackersBySource,
+    totals: {
+      allTrackers: Object.keys(busLocations).length,
+      http: trackersBySource.http.length,
+      mqtt: trackersBySource.mqtt.length,
+      unknown: trackersBySource.unknown.length
+    }
+  });
 });
 
 // Assign bus to route
@@ -1668,7 +1833,23 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     buses: visibleCount,
-    routes: routes.length
+    routes: routes.length,
+    ingestion: {
+      http: {
+        enabled: true
+      },
+      mqtt: {
+        enabled: mqttState.enabled,
+        connected: mqttState.connected,
+        topic: mqttState.topic,
+        received: mqttState.received,
+        accepted: mqttState.accepted,
+        dropped: mqttState.dropped,
+        parseErrors: mqttState.parseErrors,
+        lastMessageAt: mqttState.lastMessageAt,
+        lastError: mqttState.lastError
+      }
+    }
   });
 });
 
@@ -1676,6 +1857,8 @@ app.get('/health', (req, res) => {
 app.get('/admin', basicAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
+
+setupMqttIngestion();
 
 app.listen(PORT, () => {
   console.log(`OpenTop Tracker server running on port ${PORT}`);
@@ -1685,6 +1868,9 @@ app.listen(PORT, () => {
 // Graceful shutdown - save data on exit
 process.on('SIGINT', () => {
   console.log('\n\nSaving data before shutdown...');
+  if (mqttClient) {
+    mqttClient.end(true);
+  }
   saveData();
   console.log('Data saved. Goodbye!');
   process.exit(0);
@@ -1692,6 +1878,9 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   console.log('\nSaving data before shutdown...');
+  if (mqttClient) {
+    mqttClient.end(true);
+  }
   saveData();
   process.exit(0);
 });

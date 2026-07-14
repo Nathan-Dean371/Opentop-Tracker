@@ -1,0 +1,5 @@
+passwords
+certs/
+*.key
+*.pem
+*.p12
