@@ -401,7 +401,8 @@ function setupMqttIngestion() {
 
   const options = {
     clientId: MQTT_CLIENT_ID,
-    reconnectPeriod: 5000
+    reconnectPeriod: 5000,
+    rejectUnauthorized: false
   };
 
   if (MQTT_USERNAME) {
