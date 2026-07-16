@@ -139,6 +139,24 @@ const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "r
 const FORWARD_ADVANCE_MARGIN_METERS = 120; // next stop must be meaningfully closer before auto-advance
 const MIN_AUTO_ADVANCE_INTERVAL_MS = 20000; // prevent rapid multi-stop jumps from sparse polling
 
+const SERVICE_STATE = Object.freeze({
+  EN_ROUTE: 'en_route',
+  WAITING: 'waiting',
+  FINISHED: 'finished'
+});
+
+function getServiceStateLabel(serviceState) {
+  switch (serviceState) {
+    case SERVICE_STATE.WAITING:
+      return 'Waiting for Next Tour to Start';
+    case SERVICE_STATE.FINISHED:
+      return 'Service Finished for Today';
+    case SERVICE_STATE.EN_ROUTE:
+    default:
+      return 'En Route';
+  }
+}
+
 function normalizeBusVisibilityMode(value) {
   return String(value || '').toLowerCase() === 'debug' ? 'debug' : 'public';
 }
@@ -1355,7 +1373,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
     eta = Math.round(distanceToNext / speedMs); // seconds
   }
 
-  let serviceState = 'en_route';
+  let serviceState = SERVICE_STATE.EN_ROUTE;
   let nextRun = null;
 
   // Timetable-based "waiting at start" detection only applies when there is
@@ -1390,7 +1408,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
       // Only switch to "waiting" mode if the bus is effectively parked at the
       // start stop and there is an upcoming departure.
       if (isNearStart && isStopped) {
-        serviceState = 'Waiting for Next Store to Start';
+        serviceState = SERVICE_STATE.WAITING;
         eta = null; // we use nextRun.secondsUntil on the client instead
         nextRun = {
           time: minutesToHHMM(nextDepartureMinutes),
@@ -1402,10 +1420,12 @@ app.get('/api/eta/:trackerId', (req, res) => {
     } else {
       // No more departures today
       if (isNearStart && isStopped) {
-        serviceState = 'finished';
+        serviceState = SERVICE_STATE.FINISHED;
       }
     }
   }
+
+  const serviceStateLabel = getServiceStateLabel(serviceState);
 
   res.json({
     trackerId,
@@ -1428,6 +1448,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
     currentSpeed: speedKmh ? speedKmh.toFixed(1) : '0', // km/h (already in km/h from OwnTracks)
     allStops: routeStops,
     serviceState,
+    serviceStateLabel,
     nextRun,
     routeProgression: {
       startStopId: route && route.startStopId ? route.startStopId : null,

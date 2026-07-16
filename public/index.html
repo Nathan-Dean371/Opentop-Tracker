@@ -397,7 +397,8 @@
                     // Update popup
                     const age = Math.floor(Date.now() / 1000 - timestamp);
                     const isActive = age < 300; // Active if updated in last 5 minutes
-                    const isWaiting = !isActive || (etaData && etaData.serviceState === 'waiting');
+                    const serviceState = normalizeServiceState(etaData && etaData.serviceState);
+                    const isWaiting = !isActive || serviceState === 'waiting';
                     const isStopped = !isWaiting && (velocity === undefined || velocity < 2); // Stopped if active but not moving
                     
                     let statusClass, statusText;
@@ -419,7 +420,7 @@
                     `;
                     
                     if (etaData) {
-                        if (etaData.serviceState === 'waiting' && etaData.nextRun) {
+                        if (serviceState === 'waiting' && etaData.nextRun) {
                             const nextRun = etaData.nextRun;
                             popupContent += `<br><br><b>Next Tour:</b><br>`;
                             popupContent += `${nextRun.time || '—'}<br>`;
@@ -472,7 +473,7 @@
                     `;
                     
                     if (etaData) {
-                        if (etaData.serviceState === 'waiting' && etaData.nextRun) {
+                        if (serviceState === 'waiting' && etaData.nextRun) {
                             const nextRun = etaData.nextRun;
                             cardHTML += `<div class="bus-card__section">`;
                             cardHTML += `<div class="bus-card__section-title">Next Tour</div>`;
@@ -610,6 +611,15 @@
             return calculateSecondsUntil(nextRun.departureMinutes);
         }
 
+        function normalizeServiceState(serviceState) {
+            if (!serviceState || typeof serviceState !== 'string') return 'en_route';
+            const normalized = serviceState.trim().toLowerCase();
+            if (normalized === 'waiting' || normalized.includes('waiting')) return 'waiting';
+            if (normalized === 'finished' || normalized.includes('finished')) return 'finished';
+            if (normalized === 'en_route' || normalized === 'en route') return 'en_route';
+            return 'en_route';
+        }
+
         function showNextStopBar(deviceId, bus, etaData) {
             if (!isWithinOperatingHours(bus)) {
                 // Do not show bar if outside operating hours
@@ -617,7 +627,7 @@
                 return;
             }
 
-            const serviceState = etaData && etaData.serviceState ? etaData.serviceState : 'en_route';
+            const serviceState = normalizeServiceState(etaData && etaData.serviceState);
             const nextStop = etaData && etaData.nextStop ? etaData.nextStop : null;
             const nextRun = etaData && etaData.nextRun ? etaData.nextRun : null;
 
