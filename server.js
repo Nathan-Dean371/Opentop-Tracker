@@ -86,6 +86,17 @@ const MQTT_TOPIC = (process.env.MQTT_TOPIC || 'owntracks/+/+').trim();
 const MQTT_CLIENT_ID = (process.env.MQTT_CLIENT_ID || `opentop-backend-${Math.random().toString(16).slice(2, 10)}`).trim();
 const MQTT_USERNAME = process.env.MQTT_USERNAME;
 const MQTT_PASSWORD = process.env.MQTT_PASSWORD;
+const MQTT_KEEPALIVE_SECONDS = Number.isFinite(parseInt(process.env.MQTT_KEEPALIVE_SECONDS, 10))
+  ? parseInt(process.env.MQTT_KEEPALIVE_SECONDS, 10)
+  : 60;
+const MQTT_RECONNECT_PERIOD_MS = Number.isFinite(parseInt(process.env.MQTT_RECONNECT_PERIOD_MS, 10))
+  ? parseInt(process.env.MQTT_RECONNECT_PERIOD_MS, 10)
+  : 5000;
+const MQTT_CONNECT_TIMEOUT_MS = Number.isFinite(parseInt(process.env.MQTT_CONNECT_TIMEOUT_MS, 10))
+  ? parseInt(process.env.MQTT_CONNECT_TIMEOUT_MS, 10)
+  : 30000;
+const MQTT_CLEAN_SESSION = String(process.env.MQTT_CLEAN_SESSION || 'false').toLowerCase() === 'true';
+const MQTT_TLS_REJECT_UNAUTHORIZED = String(process.env.MQTT_TLS_REJECT_UNAUTHORIZED || 'false').toLowerCase() === 'true';
 
 let mqttClient = null;
 const mqttState = {
@@ -401,8 +412,12 @@ function setupMqttIngestion() {
 
   const options = {
     clientId: MQTT_CLIENT_ID,
-    reconnectPeriod: 5000,
-    rejectUnauthorized: false
+    reconnectPeriod: MQTT_RECONNECT_PERIOD_MS,
+    connectTimeout: MQTT_CONNECT_TIMEOUT_MS,
+    keepalive: MQTT_KEEPALIVE_SECONDS,
+    clean: MQTT_CLEAN_SESSION,
+    reschedulePings: true,
+    rejectUnauthorized: MQTT_TLS_REJECT_UNAUTHORIZED
   };
 
   if (MQTT_USERNAME) {
@@ -418,14 +433,14 @@ function setupMqttIngestion() {
   mqttClient.on('connect', () => {
     mqttState.connected = true;
     mqttState.lastError = null;
-    console.log(`✅ Connected to MQTT broker at ${MQTT_BROKER_URL}`);
-    mqttClient.subscribe(MQTT_TOPIC, (err) => {
+    console.log(`✅ Connected to MQTT broker at ${MQTT_BROKER_URL} (keepalive=${MQTT_KEEPALIVE_SECONDS}s, clean=${MQTT_CLEAN_SESSION})`);
+    mqttClient.subscribe(MQTT_TOPIC, { qos: 1 }, (err) => {
       if (err) {
         mqttState.lastError = err.message;
         console.error(`⚠️ Failed to subscribe to MQTT topic ${MQTT_TOPIC}:`, err.message);
         return;
       }
-      console.log(`📡 Subscribed to MQTT topic: ${MQTT_TOPIC}`);
+      console.log(`📡 Subscribed to MQTT topic: ${MQTT_TOPIC} (qos=1)`);
     });
   });
 
@@ -442,6 +457,16 @@ function setupMqttIngestion() {
   mqttClient.on('offline', () => {
     mqttState.connected = false;
     console.warn('⚠️ MQTT client is offline');
+  });
+
+  mqttClient.on('close', () => {
+    mqttState.connected = false;
+    console.warn('⚠️ MQTT connection closed');
+  });
+
+  mqttClient.on('disconnect', (packet) => {
+    mqttState.connected = false;
+    console.warn(`⚠️ MQTT disconnect received from broker (reasonCode=${packet && packet.reasonCode != null ? packet.reasonCode : 'n/a'})`);
   });
 
   mqttClient.on('message', (topic, message) => {
@@ -1866,22 +1891,38 @@ app.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
 });
 
-// Graceful shutdown - save data on exit
-process.on('SIGINT', () => {
-  console.log('\n\nSaving data before shutdown...');
-  if (mqttClient) {
-    mqttClient.end(true);
-  }
-  saveData();
-  console.log('Data saved. Goodbye!');
-  process.exit(0);
-});
+let isShuttingDown = false;
 
-process.on('SIGTERM', () => {
-  console.log('\nSaving data before shutdown...');
-  if (mqttClient) {
-    mqttClient.end(true);
+// Graceful shutdown prevents abrupt TLS EOFs on the broker side.
+function shutdownGracefully(signal) {
+  if (isShuttingDown) {
+    return;
   }
-  saveData();
-  process.exit(0);
-});
+  isShuttingDown = true;
+
+  console.log(`\n${signal} received. Saving data before shutdown...`);
+
+  const finalize = () => {
+    saveData();
+    console.log('Data saved. Goodbye!');
+    process.exit(0);
+  };
+
+  if (!mqttClient) {
+    finalize();
+    return;
+  }
+
+  const forceExitTimer = setTimeout(() => {
+    console.warn('⚠️ MQTT shutdown timed out; forcing process exit.');
+    finalize();
+  }, 5000);
+
+  mqttClient.end(false, {}, () => {
+    clearTimeout(forceExitTimer);
+    finalize();
+  });
+}
+
+process.on('SIGINT', () => shutdownGracefully('SIGINT'));
+process.on('SIGTERM', () => shutdownGracefully('SIGTERM'));

@@ -104,6 +104,11 @@ Set these on the Node service:
 - MQTT_CLIENT_ID=opentop-backend
 - MQTT_USERNAME=opentop_backend
 - MQTT_PASSWORD=<backend-password>
+- MQTT_KEEPALIVE_SECONDS=60
+- MQTT_RECONNECT_PERIOD_MS=5000
+- MQTT_CONNECT_TIMEOUT_MS=30000
+- MQTT_CLEAN_SESSION=false
+- MQTT_TLS_REJECT_UNAUTHORIZED=false (set true when using trusted cert chains)
 
 When MQTT_BROKER_URL is empty, app stays in HTTP-only mode.
 
