@@ -142,7 +142,7 @@ const MISMATCH_RESYNC_INDEX_GAP = 2; // minimum stop-index disagreement before m
 const MISMATCH_RESYNC_SAMPLE_COUNT = 3; // consecutive mismatches required before re-sync
 const PROGRESSION_SAMPLE_BUFFER_SIZE = 8; // retain a short ring buffer for debugging decisions
 const MIN_RESYNC_INTERVAL_MS = 15000; // avoid rapid repeated re-syncing
-const PROJECTION_MAX_DISTANCE_METERS = 120; // beyond this, route projection is considered low confidence
+const PROJECTION_MAX_DISTANCE_METERS = 220; // beyond this, route projection is considered low confidence
 const ARRIVAL_CONFIRMATION_SAMPLES = 2; // consecutive near+slow samples needed to confirm dwell arrival
 const MIN_DWELL_SECONDS = 6; // minimum near+slow dwell duration before promoting arrival transition
 const PASS_MARGIN_METERS = 35; // consider a stop passed once bus progress moves beyond this margin
@@ -1174,6 +1174,7 @@ app.get('/api/admin/progression', basicAuth, (req, res) => {
         mismatchCount: state ? state.mismatchCount : null,
         routeProgressS: state ? state.routeProgressS : null,
         lap: state ? state.lap : null,
+        projectionAvailable: Boolean(state && Number.isFinite(state.routeProgressS)),
         updatedAt: state && state.updatedAt ? new Date(state.updatedAt).toISOString() : null,
         lastTransitionAt: state && state.lastTransitionAt ? new Date(state.lastTransitionAt).toISOString() : null,
         nextStop: nextStop
@@ -1185,6 +1186,9 @@ app.get('/api/admin/progression', basicAuth, (req, res) => {
       },
       recentDecisionEvidence: {
         sampleCount: state && Array.isArray(state.lastSamples) ? state.lastSamples.length : 0,
+        latestProjectionDistance: lastSample && Number.isFinite(lastSample.distanceToRoute)
+          ? lastSample.distanceToRoute
+          : null,
         latest: lastSample || null,
         recent: state && Array.isArray(state.lastSamples)
           ? state.lastSamples.slice(-5)
@@ -1447,10 +1451,12 @@ app.get('/api/eta/:trackerId', (req, res) => {
         speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
         longEnoughSinceLastAdvance &&
         isForwardClearlyCloser &&
+        routeProgress.available &&
         !isReverseTravel
       ) {
         // If the forward stop is significantly closer (and enough time has passed),
         // assume the tracked stop has been passed without stopping.
+        // Guard with route projection availability to avoid premature jumps on GPS geometry quirks.
         targetStop = forwardStop;
       } else if (longEnoughSinceLastAdvance && hasPassEvidence && !isReverseTravel) {
         // Polyline progress says we have already moved beyond the target stop.
@@ -1498,6 +1504,9 @@ app.get('/api/eta/:trackerId', (req, res) => {
 
     if (routeProgress.available) {
       confidence = clamp((confidence * 0.7) + (routeProgress.projectionConfidence * 0.3), 0, 1);
+    } else {
+      // Avoid overconfidence when we cannot lock the bus to route geometry.
+      confidence = clamp(confidence - 0.12, 0, 0.75);
     }
 
     if (isReverseTravel) {
