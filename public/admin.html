@@ -31,6 +31,7 @@
             <button class="tab-button" onclick="switchTab('buses')">Buses</button>
             <button class="tab-button" onclick="switchTab('trackers')">Trackers</button>
             <button class="tab-button" onclick="switchTab('assignments')">Assignments</button>
+            <button class="tab-button" onclick="switchTab('progression')">Progression</button>
             <button class="tab-button" onclick="switchTab('embed')">Embed</button>
         </div>
         
@@ -402,6 +403,45 @@
             </div>
         </div>
 
+        <!-- Progression Tab -->
+        <div id="progression-tab" class="tab-content">
+            <div class="form-section">
+                <h3>Progression Diagnostics</h3>
+                <p style="margin-bottom: 12px; color: #666;">
+                    Live machine-state diagnostics for next-stop selection and ETA progression decisions.
+                </p>
+                <div class="progression-toolbar">
+                    <div class="form-group" style="margin: 0; min-width: 220px;">
+                        <label for="progressionBusFilter">Bus</label>
+                        <select id="progressionBusFilter">
+                            <option value="">All buses</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin: 0; min-width: 220px;">
+                        <label for="progressionStateFilter">State</label>
+                        <select id="progressionStateFilter">
+                            <option value="">All states</option>
+                            <option value="off_route_recovery">off_route_recovery</option>
+                            <option value="en_route">en_route</option>
+                            <option value="dwell_at_stop">dwell_at_stop</option>
+                            <option value="waiting_start">waiting_start</option>
+                            <option value="initializing">initializing</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" type="button" id="refreshProgressionBtn">Refresh</button>
+                    <label class="progression-autorefresh-toggle">
+                        <input type="checkbox" id="progressionAutoRefresh" checked>
+                        Auto-refresh
+                    </label>
+                </div>
+            </div>
+
+            <div class="list-section">
+                <div class="progression-summary" id="progressionSummary">Loading diagnostics...</div>
+                <div id="progressionCards" class="progression-cards"></div>
+            </div>
+        </div>
+
         <!-- Embed Tab -->
         <div id="embed-tab" class="tab-content">
             <div class="form-section">
@@ -440,6 +480,7 @@
         let trackers = [];
         let adminLiveLocations = {};
         const adminLiveBusMarkers = {};
+        let progressionDiagnostics = [];
 
         // Shared color + icon helpers (keep admin previews consistent with main map)
         const routeThemeColors = ['#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316'];
@@ -627,12 +668,159 @@
             if (tabName === 'trackers') {
                 loadTrackers();
             }
+            if (tabName === 'progression') {
+                loadProgressionDiagnostics();
+            }
             
             // Refresh map sizes
             setTimeout(() => {
                 if (map) map.invalidateSize();
                 if (stopMap) stopMap.invalidateSize();
             }, 100);
+        }
+
+        function escapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function formatProgressionTimestamp(isoLike) {
+            if (!isoLike) return 'N/A';
+            const date = new Date(isoLike);
+            if (Number.isNaN(date.getTime())) return 'N/A';
+            return date.toLocaleString();
+        }
+
+        function getProgressionStateClass(state) {
+            const normalized = String(state || '').toLowerCase();
+            if (normalized === 'off_route_recovery') return 'progression-chip danger';
+            if (normalized === 'dwell_at_stop' || normalized === 'waiting_start') return 'progression-chip waiting';
+            if (normalized === 'en_route') return 'progression-chip success';
+            return 'progression-chip neutral';
+        }
+
+        function renderProgressionDiagnostics() {
+            const cardsContainer = document.getElementById('progressionCards');
+            const summary = document.getElementById('progressionSummary');
+            if (!cardsContainer || !summary) return;
+
+            const busFilter = document.getElementById('progressionBusFilter')?.value || '';
+            const stateFilter = document.getElementById('progressionStateFilter')?.value || '';
+
+            const filtered = progressionDiagnostics.filter(item => {
+                const busMatch = !busFilter || item.busId === busFilter;
+                const stateMatch = !stateFilter || (item.progression && item.progression.state === stateFilter);
+                return busMatch && stateMatch;
+            });
+
+            const inRecovery = filtered.filter(item => item.progression && item.progression.state === 'off_route_recovery').length;
+            const highMismatch = filtered.filter(item => item.progression && Number(item.progression.mismatchCount || 0) >= 2).length;
+            summary.innerHTML = `Showing <strong>${filtered.length}</strong> buses · <strong>${inRecovery}</strong> in recovery · <strong>${highMismatch}</strong> high mismatch`;
+
+            if (filtered.length === 0) {
+                cardsContainer.innerHTML = '<div class="progression-empty">No progression diagnostics match the current filters.</div>';
+                return;
+            }
+
+            cardsContainer.innerHTML = filtered.map(item => {
+                const p = item.progression || {};
+                const location = item.location || {};
+                const evidence = item.recentDecisionEvidence || {};
+                const latest = evidence.latest || null;
+                const recentSamples = Array.isArray(evidence.recent) ? evidence.recent : [];
+
+                const nextLabel = p.nextStop ? `#${p.nextStop.order} ${p.nextStop.name}` : 'N/A';
+                const lastLabel = p.lastStop ? `#${p.lastStop.order} ${p.lastStop.name}` : 'N/A';
+                const confidence = Number.isFinite(Number(p.confidence)) ? Number(p.confidence).toFixed(2) : 'N/A';
+
+                return `
+                    <article class="progression-card">
+                        <header class="progression-card-header">
+                            <div>
+                                <h4>${escapeHtml(item.busName || 'Unnamed bus')} ${item.busNumber ? `(${escapeHtml(item.busNumber)})` : ''}</h4>
+                                <p>Tracker: ${escapeHtml(item.trackerId || 'N/A')} · Route: ${escapeHtml(item.routeName || 'N/A')}</p>
+                            </div>
+                            <span class="${getProgressionStateClass(p.state)}">${escapeHtml(p.state || 'unknown')}</span>
+                        </header>
+
+                        <div class="progression-grid">
+                            <div><span>Confidence</span><strong>${confidence}</strong></div>
+                            <div><span>Mismatch</span><strong>${Number(p.mismatchCount || 0)}</strong></div>
+                            <div><span>Route s</span><strong>${p.routeProgressS != null ? escapeHtml(String(p.routeProgressS)) : 'N/A'}</strong></div>
+                            <div><span>Lap</span><strong>${p.lap != null ? escapeHtml(String(p.lap)) : '0'}</strong></div>
+                            <div><span>Next Stop</span><strong>${escapeHtml(nextLabel)}</strong></div>
+                            <div><span>Last Stop</span><strong>${escapeHtml(lastLabel)}</strong></div>
+                        </div>
+
+                        <div class="progression-subgrid">
+                            <div>
+                                <span>Updated</span>
+                                <strong>${escapeHtml(formatProgressionTimestamp(p.updatedAt))}</strong>
+                            </div>
+                            <div>
+                                <span>Transition</span>
+                                <strong>${escapeHtml(formatProgressionTimestamp(p.lastTransitionAt))}</strong>
+                            </div>
+                            <div>
+                                <span>GPS Speed</span>
+                                <strong>${Number.isFinite(Number(location.speedKmh)) ? Number(location.speedKmh).toFixed(1) + ' km/h' : 'N/A'}</strong>
+                            </div>
+                            <div>
+                                <span>Manual Override</span>
+                                <strong>${item.hasManualOverride ? `YES (${escapeHtml(item.manualNextStopId || '')})` : 'No'}</strong>
+                            </div>
+                        </div>
+
+                        <details class="progression-evidence">
+                            <summary>Recent Decision Evidence (${recentSamples.length})</summary>
+                            <pre>${escapeHtml(JSON.stringify(latest, null, 2))}</pre>
+                        </details>
+                    </article>
+                `;
+            }).join('');
+        }
+
+        function updateProgressionBusFilterOptions() {
+            const select = document.getElementById('progressionBusFilter');
+            if (!select) return;
+            const previous = select.value;
+            const options = buses.map(bus => `
+                <option value="${bus.id}">${escapeHtml(bus.name)} (${escapeHtml(bus.number || '')})</option>
+            `).join('');
+            select.innerHTML = '<option value="">All buses</option>' + options;
+            if (previous && buses.some(bus => bus.id === previous)) {
+                select.value = previous;
+            }
+        }
+
+        async function loadProgressionDiagnostics() {
+            const cardsContainer = document.getElementById('progressionCards');
+            if (cardsContainer) {
+                cardsContainer.innerHTML = '<div class="progression-empty">Loading diagnostics...</div>';
+            }
+
+            const busId = document.getElementById('progressionBusFilter')?.value || '';
+            const query = busId ? `?busId=${encodeURIComponent(busId)}` : '';
+
+            try {
+                const response = await fetch(`/api/admin/progression${query}`, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`Progression API error (${response.status})`);
+                }
+
+                const payload = await response.json();
+                progressionDiagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
+                renderProgressionDiagnostics();
+            } catch (error) {
+                console.error('Error loading progression diagnostics:', error);
+                if (cardsContainer) {
+                    cardsContainer.innerHTML = `<div class="progression-empty">Failed to load diagnostics: ${escapeHtml(error.message)}</div>`;
+                }
+            }
         }
         
         // Route management
@@ -1396,6 +1584,7 @@
                 `}).join('');
                 
                 updateBusSelects();
+                updateProgressionBusFilterOptions();
                 // Keep trackers view in sync with latest bus metadata
                 renderTrackersTable();
             } catch (error) {
@@ -2185,7 +2374,21 @@
                 progressionRouteSelect.addEventListener('change', updateProgressionStopOptions);
             }
 
+            const progressionBusFilter = document.getElementById('progressionBusFilter');
+            const progressionStateFilter = document.getElementById('progressionStateFilter');
+            const refreshProgressionBtn = document.getElementById('refreshProgressionBtn');
+            if (progressionBusFilter) progressionBusFilter.addEventListener('change', loadProgressionDiagnostics);
+            if (progressionStateFilter) progressionStateFilter.addEventListener('change', renderProgressionDiagnostics);
+            if (refreshProgressionBtn) refreshProgressionBtn.addEventListener('click', loadProgressionDiagnostics);
+
             setInterval(loadAdminLiveLocations, 5000);
+            setInterval(() => {
+                const autoRefresh = document.getElementById('progressionAutoRefresh');
+                const progressionTabActive = document.getElementById('progression-tab')?.classList.contains('active');
+                if (autoRefresh && autoRefresh.checked && progressionTabActive) {
+                    loadProgressionDiagnostics();
+                }
+            }, 8000);
         });
     </script>
         <!-- Admin ETA bar -->
