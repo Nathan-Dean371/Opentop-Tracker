@@ -421,7 +421,7 @@
                     if (etaData) {
                         if (etaData.serviceState === 'waiting' && etaData.nextRun) {
                             const nextRun = etaData.nextRun;
-                            popupContent += `<br><br><b>Next Run:</b><br>`;
+                            popupContent += `<br><br><b>Next Tour:</b><br>`;
                             popupContent += `${nextRun.time || '—'}<br>`;
                             if (nextRun.departureMinutes != null) {
                                 const secondsUntil = getSecondsUntilNextRun(nextRun);
@@ -475,7 +475,7 @@
                         if (etaData.serviceState === 'waiting' && etaData.nextRun) {
                             const nextRun = etaData.nextRun;
                             cardHTML += `<div class="bus-card__section">`;
-                            cardHTML += `<div class="bus-card__section-title">Next Run</div>`;
+                            cardHTML += `<div class="bus-card__section-title">Next Tour</div>`;
                             cardHTML += `<div class="bus-card__row">`;
                             cardHTML += `<span class="bus-card__label">Departure</span>`;
                             cardHTML += `<span class="bus-card__value">${nextRun.time || '—'}</span>`;
@@ -627,7 +627,7 @@
             const rightValue = document.getElementById('etaRightValue');
 
             if (serviceState === 'waiting' && nextRun) {
-                leftLabel.textContent = 'Next Run:';
+                leftLabel.textContent = 'Next Tour:';
                 rightLabel.textContent = 'Starts in:';
                 stopNameEl.textContent = nextRun.time || '—';
                 const secondsUntil = getSecondsUntilNextRun(nextRun);

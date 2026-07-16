@@ -1365,7 +1365,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
       // Only switch to "waiting" mode if the bus is effectively parked at the
       // start stop and there is an upcoming departure.
       if (isNearStart && isStopped) {
-        serviceState = 'waiting';
+        serviceState = 'Waiting for Next Store to Start';
         eta = null; // we use nextRun.secondsUntil on the client instead
         nextRun = {
           time: minutesToHHMM(nextDepartureMinutes),
