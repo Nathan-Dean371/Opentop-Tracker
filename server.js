@@ -138,11 +138,29 @@ const STOPPED_SPEED_KMH_THRESHOLD = 2; // below this is treated as stopped
 const ARRIVAL_RADIUS_METERS = 50; // distance within which we consider a stop "reached"
 const FORWARD_ADVANCE_MARGIN_METERS = 120; // next stop must be meaningfully closer before auto-advance
 const MIN_AUTO_ADVANCE_INTERVAL_MS = 20000; // prevent rapid multi-stop jumps from sparse polling
+const MISMATCH_RESYNC_INDEX_GAP = 2; // minimum stop-index disagreement before mismatch is counted
+const MISMATCH_RESYNC_SAMPLE_COUNT = 3; // consecutive mismatches required before re-sync
+const PROGRESSION_SAMPLE_BUFFER_SIZE = 8; // retain a short ring buffer for debugging decisions
+const MIN_RESYNC_INTERVAL_MS = 15000; // avoid rapid repeated re-syncing
+const PROJECTION_MAX_DISTANCE_METERS = 120; // beyond this, route projection is considered low confidence
+const ARRIVAL_CONFIRMATION_SAMPLES = 2; // consecutive near+slow samples needed to confirm dwell arrival
+const MIN_DWELL_SECONDS = 6; // minimum near+slow dwell duration before promoting arrival transition
+const PASS_MARGIN_METERS = 35; // consider a stop passed once bus progress moves beyond this margin
+const MIN_PROGRESS_DELTA_FOR_REVERSE_METERS = 20; // ignore tiny progress fluctuations when inferring reverse motion
+const REVERSE_HEADING_DELTA_DEGREES = 120; // heading opposite route direction above this implies reverse travel
 
 const SERVICE_STATE = Object.freeze({
   EN_ROUTE: 'en_route',
   WAITING: 'waiting',
   FINISHED: 'finished'
+});
+
+const PROGRESSION_STATE = Object.freeze({
+  INITIALIZING: 'initializing',
+  EN_ROUTE: 'en_route',
+  DWELL_AT_STOP: 'dwell_at_stop',
+  WAITING_START: 'waiting_start',
+  OFF_ROUTE_RECOVERY: 'off_route_recovery'
 });
 
 function getServiceStateLabel(serviceState) {
@@ -1093,6 +1111,99 @@ app.get('/api/admin/ingestion', basicAuth, (req, res) => {
   });
 });
 
+// Admin-only progression diagnostics for debugging next-stop selection.
+app.get('/api/admin/progression', basicAuth, (req, res) => {
+  const requestedBusId = req.query.busId ? String(req.query.busId) : null;
+  const requestedTrackerId = req.query.trackerId ? String(req.query.trackerId) : null;
+
+  const candidateBusIds = requestedBusId
+    ? [requestedBusId]
+    : buses.map(bus => bus.id);
+
+  const diagnostics = [];
+
+  for (const busId of candidateBusIds) {
+    const bus = buses.find(item => item.id === busId);
+    if (!bus) continue;
+
+    const trackerId = Object.keys(busAssignments).find(tid => busAssignments[tid] === busId) || bus.trackerId || null;
+    if (requestedTrackerId && trackerId !== requestedTrackerId) continue;
+
+    const routeId = busRouteAssignments[busId] || null;
+    const route = routeId ? routes.find(r => r.id === routeId) : null;
+    const routeStops = routeId
+      ? stops.filter(s => s.routeId === routeId).sort((a, b) => a.order - b.order)
+      : [];
+    const rawState = busNextStopState[busId] || null;
+    const state = resolveLegacyProgressionState(rawState);
+
+    const nextStop = state && state.nextStopId
+      ? routeStops.find(s => s.id === state.nextStopId) || null
+      : null;
+    const lastStop = state && state.lastStopId
+      ? routeStops.find(s => s.id === state.lastStopId) || null
+      : null;
+
+    const location = trackerId && busLocations[trackerId] ? busLocations[trackerId] : null;
+    const lastSample = state && Array.isArray(state.lastSamples) && state.lastSamples.length > 0
+      ? state.lastSamples[state.lastSamples.length - 1]
+      : null;
+
+    diagnostics.push({
+      busId,
+      busName: bus.name || null,
+      busNumber: bus.number || null,
+      trackerId,
+      routeId,
+      routeName: route ? route.name : null,
+      hasManualOverride: Boolean(manualNextStops[busId]),
+      manualNextStopId: manualNextStops[busId] || null,
+      location: location
+        ? {
+            lat: Number.isFinite(Number(location.lat)) ? Number(location.lat) : null,
+            lon: Number.isFinite(Number(location.lon)) ? Number(location.lon) : null,
+            speedKmh: Number.isFinite(Number(location.velocity)) ? Number(location.velocity) : 0,
+            source: location.source || null,
+            timestamp: location.timestamp || null,
+            deviceTimestamp: location.deviceTimestamp || null
+          }
+        : null,
+      progression: {
+        state: state ? state.state : null,
+        confidence: state ? state.confidence : null,
+        mismatchCount: state ? state.mismatchCount : null,
+        routeProgressS: state ? state.routeProgressS : null,
+        lap: state ? state.lap : null,
+        updatedAt: state && state.updatedAt ? new Date(state.updatedAt).toISOString() : null,
+        lastTransitionAt: state && state.lastTransitionAt ? new Date(state.lastTransitionAt).toISOString() : null,
+        nextStop: nextStop
+          ? { id: nextStop.id, name: nextStop.name, order: nextStop.order }
+          : null,
+        lastStop: lastStop
+          ? { id: lastStop.id, name: lastStop.name, order: lastStop.order }
+          : null
+      },
+      recentDecisionEvidence: {
+        sampleCount: state && Array.isArray(state.lastSamples) ? state.lastSamples.length : 0,
+        latest: lastSample || null,
+        recent: state && Array.isArray(state.lastSamples)
+          ? state.lastSamples.slice(-5)
+          : []
+      }
+    });
+  }
+
+  res.json({
+    generatedAt: new Date().toISOString(),
+    filters: {
+      busId: requestedBusId,
+      trackerId: requestedTrackerId
+    },
+    count: diagnostics.length,
+    diagnostics
+  });
+});
+
 // Assign bus to route
 app.post('/api/buses/:busId/assign-route', basicAuth, (req, res) => {
   const { busId } = req.params;
@@ -1270,12 +1381,40 @@ app.get('/api/eta/:trackerId', (req, res) => {
   // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
     let targetStop = null;
- 
+    const nowMs = Date.now();
+    const routeLoop = isRouteLoop(route, routeStops);
+
     // Get the last known next stop state for this bus.
     // Backward-compatible with previous string-only state format.
-    const lastState = busNextStopState[busId];
-    const lastNextStopId = typeof lastState === 'string' ? lastState : lastState && lastState.nextStopId;
-    const lastUpdatedAt = typeof lastState === 'object' ? (lastState.updatedAt || 0) : 0;
+    const lastState = resolveLegacyProgressionState(busNextStopState[busId]);
+
+    const routeProgress = resolveRouteProgress(route, routeStops, busLocation, lastState, speedKmh);
+    const nearestInfo = findNearestStop(routeStops, busLocation);
+    const nearestImpliedNext = getImpliedNextFromNearest(routeStops, route, nearestInfo, speedKmh);
+    const routeImplied = getImpliedStopsFromRouteProgress(routeStops, route, routeProgress, lastState, speedKmh);
+    const impliedNext = routeImplied.impliedNextStop
+      ? { stop: routeImplied.impliedNextStop, index: routeImplied.impliedNextIndex, source: routeImplied.source }
+      : { stop: nearestImpliedNext.stop, index: nearestImpliedNext.index, source: 'nearest' };
+
+    const lastNextStopId = lastState && lastState.nextStopId;
+    const lastUpdatedAt = lastState ? lastState.updatedAt : 0;
+    const lastTransitionAt = lastState ? (lastState.lastTransitionAt || lastUpdatedAt || 0) : 0;
+    let mismatchCount = lastState ? (lastState.mismatchCount || 0) : 0;
+    let confidence = lastState ? (lastState.confidence || 0.5) : 0.5;
+    let progressionState = lastState ? (lastState.state || PROGRESSION_STATE.EN_ROUTE) : PROGRESSION_STATE.INITIALIZING;
+    let didResync = false;
+    const previousSamples = lastState ? lastState.lastSamples : [];
+    const headingInfo = getDerivedHeadingFromSamples(previousSamples, busLocation.lat, busLocation.lon);
+    const headingDelta = getAngularDifferenceDegrees(headingInfo.headingDeg, routeProgress.routeHeadingDeg);
+    const reverseByHeading = headingDelta != null && headingDelta >= REVERSE_HEADING_DELTA_DEGREES;
+    const reverseByProgress = Number.isFinite(routeProgress.busUnwrappedS)
+      && Number.isFinite(lastState && lastState.routeProgressS)
+      && Number.isFinite(routeProgress.totalLength)
+      && (() => {
+        const prevUnwrapped = ((lastState.lap || 0) * routeProgress.totalLength) + lastState.routeProgressS;
+        return prevUnwrapped - routeProgress.busUnwrappedS > MIN_PROGRESS_DELTA_FOR_REVERSE_METERS;
+      })();
+    const isReverseTravel = routeProgress.available && (reverseByHeading || reverseByProgress);
     const lastNextStop = routeStops.find(s => s.id === lastNextStopId);
  
     if (lastNextStop) {
@@ -1286,40 +1425,86 @@ app.get('/api/eta/:trackerId', (req, res) => {
       const forwardStop = routeStops[nextIndex];
       const distanceToForward = calculateDistance(busLocation.lat, busLocation.lon, forwardStop.lat, forwardStop.lon);
       const isForwardClearlyCloser = distanceToForward + FORWARD_ADVANCE_MARGIN_METERS < distanceToLast;
-      const longEnoughSinceLastAdvance = Date.now() - lastUpdatedAt >= MIN_AUTO_ADVANCE_INTERVAL_MS;
+      const longEnoughSinceLastAdvance = nowMs - lastTransitionAt >= MIN_AUTO_ADVANCE_INTERVAL_MS;
  
+      const currentStopS = routeProgress.stopSByStopId && Number.isFinite(routeProgress.stopSByStopId[lastNextStop.id])
+        ? routeProgress.stopSByStopId[lastNextStop.id]
+        : null;
+      const nearestUnwrappedStopS = getNearestUnwrappedStopS(
+        currentStopS,
+        routeProgress.busUnwrappedS,
+        routeProgress.totalLength,
+        routeLoop
+      );
+      const hasPassEvidence = Number.isFinite(routeProgress.busUnwrappedS)
+        && Number.isFinite(nearestUnwrappedStopS)
+        && routeProgress.busUnwrappedS > (nearestUnwrappedStopS + PASS_MARGIN_METERS);
+
       if (distanceToLast <= ARRIVAL_RADIUS_METERS) {
         // We've arrived. Advance to the next stop in the sequence.
         targetStop = forwardStop;
       } else if (
         speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
         longEnoughSinceLastAdvance &&
-        isForwardClearlyCloser
+        isForwardClearlyCloser &&
+        !isReverseTravel
       ) {
         // If the forward stop is significantly closer (and enough time has passed),
         // assume the tracked stop has been passed without stopping.
+        targetStop = forwardStop;
+      } else if (longEnoughSinceLastAdvance && hasPassEvidence && !isReverseTravel) {
+        // Polyline progress says we have already moved beyond the target stop.
         targetStop = forwardStop;
       } else {
         // Still on the way to the last-known stop.
         targetStop = lastNextStop;
       }
-    } else {
-      // No state, so find the geographically nearest stop as a starting point.
-      let nearestStop = null;
-      let minDistance = Infinity;
 
-      for (const stop of routeStops) {
-        const dist = calculateDistance(busLocation.lat, busLocation.lon, stop.lat, stop.lon);
-        // Ensure the distance is a valid number before comparing
-        if (!isNaN(dist) && dist < minDistance) {
-          minDistance = dist;
-          nearestStop = stop;
-        }
+      const impliedIndex = impliedNext.index;
+      const lastIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
+      const mismatchGap = getIndexGap(lastIndex, impliedIndex, routeLoop, routeStops.length);
+      if (Number.isFinite(mismatchGap) && mismatchGap >= MISMATCH_RESYNC_INDEX_GAP) {
+        mismatchCount += 1;
+        confidence = clamp(confidence - 0.12, 0, 1);
+      } else {
+        mismatchCount = Math.max(0, mismatchCount - 1);
+        confidence = clamp(confidence + 0.05, 0, 1);
       }
-      
+
+      const canResync = nowMs - lastTransitionAt >= MIN_RESYNC_INTERVAL_MS;
+      if (
+        canResync &&
+        impliedNext.stop &&
+        mismatchCount >= MISMATCH_RESYNC_SAMPLE_COUNT
+      ) {
+        targetStop = impliedNext.stop;
+        mismatchCount = 0;
+        confidence = clamp(confidence + 0.08, 0, 1);
+        progressionState = PROGRESSION_STATE.OFF_ROUTE_RECOVERY;
+        didResync = true;
+      }
+    } else {
+      // No state, so initialize from route-progress implication when available,
+      // otherwise use the geographically nearest stop.
+      const nearestStop = nearestInfo.stop;
+      const initializedFromRoute = routeImplied.impliedNextStop;
+
       // If a nearest stop was found, use it. Otherwise, default to the first stop of the route.
       // This prevents errors if all distance calculations failed.
-      targetStop = nearestStop || routeStops[0];
+      targetStop = initializedFromRoute || nearestStop || routeStops[0];
+      mismatchCount = 0;
+      confidence = clamp(confidence + 0.08, 0, 1);
+    }
+
+    if (routeProgress.available) {
+      confidence = clamp((confidence * 0.7) + (routeProgress.projectionConfidence * 0.3), 0, 1);
+    }
+
+    if (isReverseTravel) {
+      confidence = clamp(confidence - 0.08, 0, 1);
+      if (progressionState !== PROGRESSION_STATE.OFF_ROUTE_RECOVERY) {
+        progressionState = PROGRESSION_STATE.OFF_ROUTE_RECOVERY;
+      }
     }
  
     // Check for arrival at the *newly determined* target stop, in case the bus is sitting on top of it.
@@ -1330,7 +1515,17 @@ app.get('/api/eta/:trackerId', (req, res) => {
       targetStop.lon
     );
 
-    if (distanceToTarget <= ARRIVAL_RADIUS_METERS && speedKmh < STOPPED_SPEED_KMH_THRESHOLD) {
+    const preTransitionSample = {
+      t: nowMs,
+      lat: busLocation.lat,
+      lon: busLocation.lon,
+      speedKmh: Number.isFinite(speedKmh) ? Number(speedKmh.toFixed(2)) : 0,
+      selectedNextStopId: targetStop.id,
+      distanceToTarget: Number.isFinite(distanceToTarget) ? Number(distanceToTarget.toFixed(1)) : null
+    };
+    const dwell = getDwellConfirmation(previousSamples, preTransitionSample, targetStop.id);
+
+    if (distanceToTarget <= ARRIVAL_RADIUS_METERS && speedKmh < STOPPED_SPEED_KMH_THRESHOLD && dwell.confirmed) {
       const currentIndex = routeStops.findIndex(s => s.id === targetStop.id);
       const nextIndex = getNextStopIndex(routeStops, currentIndex, route);
       targetStop = routeStops[nextIndex];
@@ -1342,10 +1537,50 @@ app.get('/api/eta/:trackerId', (req, res) => {
       );
     }
 
+    const previousTargetId = lastNextStopId || null;
+    const didTransition = !previousTargetId || previousTargetId !== targetStop.id;
+    const nextTransitionAt = didTransition ? nowMs : lastTransitionAt;
+    if (!didResync) {
+      if (progressionState !== PROGRESSION_STATE.OFF_ROUTE_RECOVERY || confidence >= 0.55) {
+        progressionState = dwell.confirmed
+          ? PROGRESSION_STATE.DWELL_AT_STOP
+          : PROGRESSION_STATE.EN_ROUTE;
+      }
+    }
+
+    const sample = {
+      t: nowMs,
+      lat: busLocation.lat,
+      lon: busLocation.lon,
+      speedKmh: Number.isFinite(speedKmh) ? Number(speedKmh.toFixed(2)) : 0,
+      headingDeg: Number.isFinite(headingInfo.headingDeg) ? Number(headingInfo.headingDeg.toFixed(1)) : null,
+      routeHeadingDeg: Number.isFinite(routeProgress.routeHeadingDeg) ? Number(routeProgress.routeHeadingDeg.toFixed(1)) : null,
+      reverseTravel: isReverseTravel,
+      impliedNextStopId: impliedNext.stop ? impliedNext.stop.id : null,
+      impliedBy: impliedNext.source,
+      selectedNextStopId: targetStop.id,
+      distanceToTarget: Number.isFinite(distanceToTarget) ? Number(distanceToTarget.toFixed(1)) : null,
+      dwellConsecutiveSamples: dwell.consecutive,
+      dwellSeconds: Number(dwell.dwellSeconds.toFixed(1)),
+      routeProgressS: Number.isFinite(routeImplied.routeProgressS) ? Number(routeImplied.routeProgressS.toFixed(1)) : null,
+      lap: Number.isFinite(routeImplied.lap) ? routeImplied.lap : 0,
+      distanceToRoute: Number.isFinite(routeImplied.projectionDistance) ? Number(routeImplied.projectionDistance.toFixed(1)) : null,
+      mismatchCount,
+      confidence: Number(confidence.toFixed(3))
+    };
+
     busNextStopState[busId] = {
       nextStopId: targetStop.id,
       lastDistanceToStop: Math.round(distanceToTarget),
-      updatedAt: Date.now()
+      updatedAt: nowMs,
+      lastTransitionAt: nextTransitionAt,
+      mismatchCount,
+      confidence: Number(confidence.toFixed(3)),
+      state: progressionState,
+      routeProgressS: Number.isFinite(routeImplied.routeProgressS) ? Number(routeImplied.routeProgressS.toFixed(1)) : null,
+      lap: Number.isFinite(routeImplied.lap) ? routeImplied.lap : (lastState ? (lastState.lap || 0) : 0),
+      lastStopId: routeImplied.impliedLastStop ? routeImplied.impliedLastStop.id : currentStopFromNext(routeStops, targetStop.id, route),
+      lastSamples: pushProgressionSample(lastState ? lastState.lastSamples : [], sample)
     };
     nextStop = targetStop;
   }
@@ -1375,6 +1610,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
 
   let serviceState = SERVICE_STATE.EN_ROUTE;
   let nextRun = null;
+  const progressionSnapshot = resolveLegacyProgressionState(busNextStopState[busId]);
 
   // Timetable-based "waiting at start" detection only applies when there is
   // no manual override in effect.
@@ -1416,6 +1652,12 @@ app.get('/api/eta/:trackerId', (req, res) => {
           secondsUntil,
           timeZone: SERVICE_TIME_ZONE
         };
+        if (progressionSnapshot) {
+          progressionSnapshot.state = PROGRESSION_STATE.WAITING_START;
+          if (busNextStopState[busId] && typeof busNextStopState[busId] === 'object') {
+            busNextStopState[busId].state = PROGRESSION_STATE.WAITING_START;
+          }
+        }
       }
     } else {
       // No more departures today
@@ -1453,7 +1695,15 @@ app.get('/api/eta/:trackerId', (req, res) => {
     routeProgression: {
       startStopId: route && route.startStopId ? route.startStopId : null,
       endStopId: route && route.endStopId ? route.endStopId : null,
-      isLoop: isRouteLoop(route, routeStops)
+      isLoop: isRouteLoop(route, routeStops),
+      machineStates: Object.values(PROGRESSION_STATE),
+      routeProgressS: progressionSnapshot && Number.isFinite(progressionSnapshot.routeProgressS)
+        ? progressionSnapshot.routeProgressS
+        : null,
+      lap: progressionSnapshot ? (progressionSnapshot.lap || 0) : 0,
+      progressionState: progressionSnapshot ? progressionSnapshot.state : null,
+      progressionConfidence: progressionSnapshot ? progressionSnapshot.confidence : null,
+      mismatchCount: progressionSnapshot ? progressionSnapshot.mismatchCount : null
     }
   });
 });
@@ -1508,6 +1758,481 @@ function getRouteStartStop(routeStops, route) {
     if (configuredStart) return configuredStart;
   }
   return routeStops[0];
+}
+
+function currentStopFromNext(routeStops, nextStopId, route) {
+  const nextIndex = routeStops.findIndex(s => s.id === nextStopId);
+  if (nextIndex < 0) return null;
+  const previousIndex = getPreviousStopIndex(routeStops, nextIndex, route);
+  if (previousIndex < 0 || previousIndex >= routeStops.length) return null;
+  return routeStops[previousIndex].id;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getIndexGap(indexA, indexB, loop, length) {
+  if (indexA < 0 || indexB < 0 || length <= 0) return Infinity;
+  const direct = Math.abs(indexA - indexB);
+  if (!loop) return direct;
+  return Math.min(direct, length - direct);
+}
+
+function pushProgressionSample(lastSamples, sample) {
+  const samples = Array.isArray(lastSamples) ? lastSamples.slice(-PROGRESSION_SAMPLE_BUFFER_SIZE + 1) : [];
+  samples.push(sample);
+  return samples;
+}
+
+function resolveLegacyProgressionState(rawState) {
+  if (!rawState) return null;
+  if (typeof rawState === 'string') {
+    return {
+      nextStopId: rawState,
+      lastDistanceToStop: null,
+      updatedAt: 0,
+      lastTransitionAt: 0,
+      mismatchCount: 0,
+      confidence: 0.5,
+      state: PROGRESSION_STATE.INITIALIZING,
+      routeProgressS: null,
+      lap: 0,
+      lastStopId: null,
+      lastSamples: []
+    };
+  }
+  if (typeof rawState !== 'object') return null;
+
+  return {
+    nextStopId: rawState.nextStopId || null,
+    lastDistanceToStop: Number.isFinite(rawState.lastDistanceToStop) ? rawState.lastDistanceToStop : null,
+    updatedAt: Number.isFinite(rawState.updatedAt) ? rawState.updatedAt : 0,
+    lastTransitionAt: Number.isFinite(rawState.lastTransitionAt)
+      ? rawState.lastTransitionAt
+      : (Number.isFinite(rawState.updatedAt) ? rawState.updatedAt : 0),
+    mismatchCount: Number.isFinite(rawState.mismatchCount) ? rawState.mismatchCount : 0,
+    confidence: Number.isFinite(rawState.confidence) ? clamp(rawState.confidence, 0, 1) : 0.5,
+    state: typeof rawState.state === 'string' ? rawState.state : PROGRESSION_STATE.INITIALIZING,
+    routeProgressS: Number.isFinite(rawState.routeProgressS) ? rawState.routeProgressS : null,
+    lap: Number.isFinite(rawState.lap) ? rawState.lap : 0,
+    lastStopId: rawState.lastStopId || null,
+    lastSamples: Array.isArray(rawState.lastSamples) ? rawState.lastSamples.slice(-PROGRESSION_SAMPLE_BUFFER_SIZE) : []
+  };
+}
+
+function isValidCoordinatePair(point) {
+  return Array.isArray(point)
+    && point.length >= 2
+    && Number.isFinite(point[0])
+    && Number.isFinite(point[1]);
+}
+
+function getRouteGeometryPoints(route) {
+  if (!route || !Array.isArray(route.coordinates)) return [];
+  return route.coordinates.filter(isValidCoordinatePair);
+}
+
+function toLocalXYMeters(lat, lon, originLat, originLon) {
+  const latScale = 111320;
+  const lonScale = 111320 * Math.cos(originLat * Math.PI / 180);
+  return {
+    x: (lon - originLon) * lonScale,
+    y: (lat - originLat) * latScale
+  };
+}
+
+function buildRouteProgressContext(route, routeStops) {
+  const geometry = getRouteGeometryPoints(route);
+  if (geometry.length < 2 || !Array.isArray(routeStops) || routeStops.length === 0) {
+    return null;
+  }
+
+  const originLat = geometry[0][0];
+  const originLon = geometry[0][1];
+  const xyPoints = geometry.map(point => toLocalXYMeters(point[0], point[1], originLat, originLon));
+  const cumulativeLengths = [0];
+  for (let i = 1; i < xyPoints.length; i += 1) {
+    const dx = xyPoints[i].x - xyPoints[i - 1].x;
+    const dy = xyPoints[i].y - xyPoints[i - 1].y;
+    const segLen = Math.sqrt(dx * dx + dy * dy);
+    cumulativeLengths.push(cumulativeLengths[i - 1] + segLen);
+  }
+  const totalLength = cumulativeLengths[cumulativeLengths.length - 1];
+  if (!Number.isFinite(totalLength) || totalLength <= 0) {
+    return null;
+  }
+
+  const context = {
+    originLat,
+    originLon,
+    geometry,
+    xyPoints,
+    cumulativeLengths,
+    totalLength
+  };
+
+  const stopProgress = [];
+  for (const stop of routeStops) {
+    const projection = projectPointToRouteS(context, stop.lat, stop.lon);
+    if (!projection || !Number.isFinite(projection.s)) continue;
+    stopProgress.push({ stop, s: projection.s });
+  }
+
+  if (stopProgress.length === 0) return null;
+  stopProgress.sort((a, b) => a.s - b.s);
+  context.stopProgress = stopProgress;
+  context.stopSByStopId = stopProgress.reduce((acc, entry) => {
+    acc[entry.stop.id] = entry.s;
+    return acc;
+  }, {});
+  return context;
+}
+
+function projectPointToRouteS(context, lat, lon) {
+  if (!context || !Array.isArray(context.xyPoints) || context.xyPoints.length < 2) return null;
+  const point = toLocalXYMeters(lat, lon, context.originLat, context.originLon);
+
+  let best = null;
+  for (let i = 0; i < context.xyPoints.length - 1; i += 1) {
+    const a = context.xyPoints[i];
+    const b = context.xyPoints[i + 1];
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const apx = point.x - a.x;
+    const apy = point.y - a.y;
+    const denom = (abx * abx) + (aby * aby);
+    const rawT = denom > 0 ? ((apx * abx) + (apy * aby)) / denom : 0;
+    const t = clamp(rawT, 0, 1);
+    const cx = a.x + (abx * t);
+    const cy = a.y + (aby * t);
+    const dx = point.x - cx;
+    const dy = point.y - cy;
+    const distSq = (dx * dx) + (dy * dy);
+    const segmentLength = context.cumulativeLengths[i + 1] - context.cumulativeLengths[i];
+    const s = context.cumulativeLengths[i] + (segmentLength * t);
+
+    if (!best || distSq < best.distSq) {
+      best = {
+        s,
+        t,
+        segmentIndex: i,
+        distanceToRoute: Math.sqrt(distSq)
+      };
+    }
+  }
+
+  return best;
+}
+
+function getImpliedStopsFromRouteProgress(routeStops, route, routeProgress, lastState, speedKmh) {
+  if (!routeProgress || !routeProgress.available || !routeProgress.nextStop) {
+    return {
+      impliedNextStop: null,
+      impliedNextIndex: -1,
+      impliedLastStop: null,
+      impliedLastIndex: -1,
+      routeProgressS: null,
+      lap: lastState ? (lastState.lap || 0) : 0,
+      source: 'nearest',
+      projectionDistance: null,
+      projectionConfidence: 0
+    };
+  }
+
+  const impliedNextStop = routeProgress.nextStop;
+  const impliedLastStop = routeProgress.lastStop;
+  const impliedNextIndex = routeStops.findIndex(s => s.id === impliedNextStop.id);
+  const impliedLastIndex = impliedLastStop ? routeStops.findIndex(s => s.id === impliedLastStop.id) : -1;
+
+  // If the bus is effectively stopped and exactly at the implied next stop, bias to the following stop.
+  if (
+    impliedNextIndex >= 0 &&
+    speedKmh < STOPPED_SPEED_KMH_THRESHOLD &&
+    routeProgress.distanceToRoute <= ARRIVAL_RADIUS_METERS
+  ) {
+    const forwardIndex = getNextStopIndex(routeStops, impliedNextIndex, route);
+    return {
+      impliedNextStop: routeStops[forwardIndex],
+      impliedNextIndex: forwardIndex,
+      impliedLastStop: impliedNextStop,
+      impliedLastIndex: impliedNextIndex,
+      routeProgressS: routeProgress.routeProgressS,
+      lap: routeProgress.lap,
+      source: 'route_s',
+      projectionDistance: routeProgress.distanceToRoute,
+      projectionConfidence: routeProgress.projectionConfidence
+    };
+  }
+
+  return {
+    impliedNextStop,
+    impliedNextIndex,
+    impliedLastStop,
+    impliedLastIndex,
+    routeProgressS: routeProgress.routeProgressS,
+    lap: routeProgress.lap,
+    source: 'route_s',
+    projectionDistance: routeProgress.distanceToRoute,
+    projectionConfidence: routeProgress.projectionConfidence
+  };
+}
+
+function resolveRouteProgress(route, routeStops, busLocation, lastState, speedKmh) {
+  const context = buildRouteProgressContext(route, routeStops);
+  if (!context) {
+    return {
+      available: false,
+      routeProgressS: null,
+      lap: lastState ? (lastState.lap || 0) : 0,
+      busUnwrappedS: null,
+      totalLength: null,
+      distanceToRoute: null,
+      projectionConfidence: 0,
+      routeHeadingDeg: null,
+      stopSByStopId: {},
+      lastStop: null,
+      nextStop: null
+    };
+  }
+
+  const projection = projectPointToRouteS(context, busLocation.lat, busLocation.lon);
+  if (!projection || !Number.isFinite(projection.s) || !Number.isFinite(projection.distanceToRoute)) {
+    return {
+      available: false,
+      routeProgressS: null,
+      lap: lastState ? (lastState.lap || 0) : 0,
+      busUnwrappedS: null,
+      totalLength: context.totalLength,
+      distanceToRoute: null,
+      projectionConfidence: 0,
+      routeHeadingDeg: null,
+      stopSByStopId: context.stopSByStopId || {},
+      lastStop: null,
+      nextStop: null
+    };
+  }
+
+  const wrappedS = clamp(projection.s, 0, context.totalLength);
+  const loop = isRouteLoop(route, routeStops);
+  let lap = lastState ? (lastState.lap || 0) : 0;
+  const lastWrappedS = lastState && Number.isFinite(lastState.routeProgressS) ? lastState.routeProgressS : null;
+
+  if (loop && lastWrappedS != null && speedKmh >= STOPPED_SPEED_KMH_THRESHOLD) {
+    const nearEndThreshold = context.totalLength * 0.85;
+    const nearStartThreshold = context.totalLength * 0.15;
+    if (lastWrappedS >= nearEndThreshold && wrappedS <= nearStartThreshold) {
+      lap += 1;
+    } else if (lastWrappedS <= nearStartThreshold && wrappedS >= nearEndThreshold) {
+      lap = Math.max(0, lap - 1);
+    }
+  }
+
+  const projectionConfidence = clamp(1 - (projection.distanceToRoute / PROJECTION_MAX_DISTANCE_METERS), 0, 1);
+  const projectionIsUsable = projection.distanceToRoute <= PROJECTION_MAX_DISTANCE_METERS;
+  const routeHeadingDeg = (() => {
+    const a = context.geometry[projection.segmentIndex];
+    const b = context.geometry[projection.segmentIndex + 1];
+    if (!a || !b) return null;
+    return getBearingDegrees(a[0], a[1], b[0], b[1]);
+  })();
+
+  const stopCandidates = [];
+  const lapOffsets = loop ? [-1, 0, 1] : [0];
+  for (const stopItem of context.stopProgress) {
+    for (const offset of lapOffsets) {
+      stopCandidates.push({
+        stop: stopItem.stop,
+        sWrapped: stopItem.s,
+        sUnwrapped: (lap + offset) * context.totalLength + stopItem.s
+      });
+    }
+  }
+
+  const busUnwrappedS = (lap * context.totalLength) + wrappedS;
+  let lastCandidate = null;
+  let nextCandidate = null;
+
+  for (const candidate of stopCandidates) {
+    if (candidate.sUnwrapped <= busUnwrappedS) {
+      if (!lastCandidate || candidate.sUnwrapped > lastCandidate.sUnwrapped) {
+        lastCandidate = candidate;
+      }
+    }
+    if (candidate.sUnwrapped > busUnwrappedS) {
+      if (!nextCandidate || candidate.sUnwrapped < nextCandidate.sUnwrapped) {
+        nextCandidate = candidate;
+      }
+    }
+  }
+
+  if (!lastCandidate && context.stopProgress.length > 0) {
+    const fallback = context.stopProgress[0];
+    lastCandidate = {
+      stop: fallback.stop,
+      sWrapped: fallback.s,
+      sUnwrapped: loop ? (lap - 1) * context.totalLength + fallback.s : fallback.s
+    };
+  }
+
+  if (!nextCandidate && context.stopProgress.length > 0) {
+    const fallback = context.stopProgress[context.stopProgress.length - 1];
+    nextCandidate = {
+      stop: fallback.stop,
+      sWrapped: fallback.s,
+      sUnwrapped: loop ? (lap + 1) * context.totalLength + fallback.s : fallback.s
+    };
+  }
+
+  return {
+    available: projectionIsUsable,
+    routeProgressS: wrappedS,
+    lap,
+    busUnwrappedS,
+    totalLength: context.totalLength,
+    distanceToRoute: projection.distanceToRoute,
+    projectionConfidence,
+    routeHeadingDeg,
+    stopSByStopId: context.stopSByStopId || {},
+    lastStop: lastCandidate ? lastCandidate.stop : null,
+    nextStop: nextCandidate ? nextCandidate.stop : null
+  };
+}
+
+function findNearestStop(routeStops, busLocation) {
+  let nearestStop = null;
+  let nearestIndex = -1;
+  let minDistance = Infinity;
+
+  for (let i = 0; i < routeStops.length; i += 1) {
+    const stop = routeStops[i];
+    const dist = calculateDistance(busLocation.lat, busLocation.lon, stop.lat, stop.lon);
+    if (!Number.isFinite(dist)) continue;
+    if (dist < minDistance) {
+      minDistance = dist;
+      nearestStop = stop;
+      nearestIndex = i;
+    }
+  }
+
+  return {
+    stop: nearestStop,
+    index: nearestIndex,
+    distance: minDistance
+  };
+}
+
+function getImpliedNextFromNearest(routeStops, route, nearestInfo, speedKmh) {
+  if (!nearestInfo || nearestInfo.index < 0) {
+    return { stop: null, index: -1 };
+  }
+
+  const nearestStop = routeStops[nearestInfo.index];
+  if (!nearestStop) {
+    return { stop: null, index: -1 };
+  }
+
+  const isMoving = speedKmh >= STOPPED_SPEED_KMH_THRESHOLD;
+  const isNearNearest = nearestInfo.distance <= ARRIVAL_RADIUS_METERS;
+  if (isMoving && isNearNearest) {
+    const forwardIndex = getNextStopIndex(routeStops, nearestInfo.index, route);
+    return { stop: routeStops[forwardIndex], index: forwardIndex };
+  }
+
+  return { stop: nearestStop, index: nearestInfo.index };
+}
+
+function getBearingDegrees(lat1, lon1, lat2, lon2) {
+  const phi1 = lat1 * Math.PI / 180;
+  const phi2 = lat2 * Math.PI / 180;
+  const lambda1 = lon1 * Math.PI / 180;
+  const lambda2 = lon2 * Math.PI / 180;
+  const y = Math.sin(lambda2 - lambda1) * Math.cos(phi2);
+  const x = (Math.cos(phi1) * Math.sin(phi2))
+    - (Math.sin(phi1) * Math.cos(phi2) * Math.cos(lambda2 - lambda1));
+  const theta = Math.atan2(y, x) * 180 / Math.PI;
+  return (theta + 360) % 360;
+}
+
+function getAngularDifferenceDegrees(a, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  const diff = Math.abs(a - b) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+function getDerivedHeadingFromSamples(lastSamples, currentLat, currentLon) {
+  if (!Array.isArray(lastSamples) || lastSamples.length === 0) {
+    return { headingDeg: null, movementMeters: 0 };
+  }
+
+  const recent = lastSamples[lastSamples.length - 1];
+  if (!recent || !Number.isFinite(recent.lat) || !Number.isFinite(recent.lon)) {
+    return { headingDeg: null, movementMeters: 0 };
+  }
+
+  const movementMeters = calculateDistance(recent.lat, recent.lon, currentLat, currentLon);
+  if (!Number.isFinite(movementMeters) || movementMeters < 3) {
+    return { headingDeg: null, movementMeters: movementMeters || 0 };
+  }
+
+  return {
+    headingDeg: getBearingDegrees(recent.lat, recent.lon, currentLat, currentLon),
+    movementMeters
+  };
+}
+
+function getNearestUnwrappedStopS(stopWrappedS, busUnwrappedS, totalLength, loop) {
+  if (!Number.isFinite(stopWrappedS) || !Number.isFinite(busUnwrappedS) || !Number.isFinite(totalLength) || totalLength <= 0) {
+    return null;
+  }
+  if (!loop) return stopWrappedS;
+
+  const baseLap = Math.floor(busUnwrappedS / totalLength);
+  const candidates = [baseLap - 1, baseLap, baseLap + 1].map(lap => (lap * totalLength) + stopWrappedS);
+  let best = null;
+  for (const candidate of candidates) {
+    if (!Number.isFinite(candidate)) continue;
+    if (best == null || Math.abs(candidate - busUnwrappedS) < Math.abs(best - busUnwrappedS)) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+function getDwellConfirmation(lastSamples, currentSample, targetStopId) {
+  const candidates = [];
+  if (Array.isArray(lastSamples)) {
+    candidates.push(...lastSamples.slice(-PROGRESSION_SAMPLE_BUFFER_SIZE));
+  }
+  candidates.push(currentSample);
+
+  let consecutive = 0;
+  let firstTime = null;
+  let lastTime = null;
+
+  for (let i = candidates.length - 1; i >= 0; i -= 1) {
+    const sample = candidates[i];
+    const isSameTarget = sample && sample.selectedNextStopId === targetStopId;
+    const isNear = sample && Number.isFinite(sample.distanceToTarget)
+      && sample.distanceToTarget <= ARRIVAL_RADIUS_METERS;
+    const isSlow = sample && Number.isFinite(sample.speedKmh)
+      && sample.speedKmh < STOPPED_SPEED_KMH_THRESHOLD;
+    if (!(isSameTarget && isNear && isSlow)) break;
+
+    consecutive += 1;
+    if (lastTime == null) lastTime = sample.t;
+    firstTime = sample.t;
+  }
+
+  const dwellSeconds = firstTime != null && lastTime != null
+    ? Math.max(0, (lastTime - firstTime) / 1000)
+    : 0;
+
+  return {
+    consecutive,
+    dwellSeconds,
+    confirmed: consecutive >= ARRIVAL_CONFIRMATION_SAMPLES && dwellSeconds >= MIN_DWELL_SECONDS
+  };
 }
 
 // Helper function to calculate distance between two points (Haversine formula)
