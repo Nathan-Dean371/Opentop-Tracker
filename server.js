@@ -1451,12 +1451,13 @@ app.get('/api/eta/:trackerId', (req, res) => {
         speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
         longEnoughSinceLastAdvance &&
         isForwardClearlyCloser &&
-        routeProgress.available &&
+        (routeProgress.available || progressionState === PROGRESSION_STATE.OFF_ROUTE_RECOVERY) &&
         !isReverseTravel
       ) {
         // If the forward stop is significantly closer (and enough time has passed),
         // assume the tracked stop has been passed without stopping.
-        // Guard with route projection availability to avoid premature jumps on GPS geometry quirks.
+        // During off-route recovery we still allow this conservative forward-only jump,
+        // so stale state does not stay pinned to a passed stop.
         targetStop = forwardStop;
       } else if (longEnoughSinceLastAdvance && hasPassEvidence && !isReverseTravel) {
         // Polyline progress says we have already moved beyond the target stop.
