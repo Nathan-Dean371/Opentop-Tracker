@@ -148,6 +148,8 @@ const MIN_DWELL_SECONDS = 6; // minimum near+slow dwell duration before promotin
 const PASS_MARGIN_METERS = 35; // consider a stop passed once bus progress moves beyond this margin
 const MIN_PROGRESS_DELTA_FOR_REVERSE_METERS = 20; // ignore tiny progress fluctuations when inferring reverse motion
 const REVERSE_HEADING_DELTA_DEGREES = 120; // heading opposite route direction above this implies reverse travel
+const RECOVERY_EXIT_CONFIDENCE = 0.55; // preferred confidence threshold for leaving recovery mode
+const RECOVERY_EXIT_MAX_MISMATCH = 1; // allow recovery exit once mismatch stabilizes near zero
 
 const SERVICE_STATE = Object.freeze({
   EN_ROUTE: 'en_route',
@@ -1451,13 +1453,11 @@ app.get('/api/eta/:trackerId', (req, res) => {
         speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
         longEnoughSinceLastAdvance &&
         isForwardClearlyCloser &&
-        (routeProgress.available || progressionState === PROGRESSION_STATE.OFF_ROUTE_RECOVERY) &&
         !isReverseTravel
       ) {
         // If the forward stop is significantly closer (and enough time has passed),
         // assume the tracked stop has been passed without stopping.
-        // During off-route recovery we still allow this conservative forward-only jump,
-        // so stale state does not stay pinned to a passed stop.
+        // This works as a projection-independent fallback for routes with wider stop spacing.
         targetStop = forwardStop;
       } else if (longEnoughSinceLastAdvance && hasPassEvidence && !isReverseTravel) {
         // Polyline progress says we have already moved beyond the target stop.
@@ -1551,7 +1551,18 @@ app.get('/api/eta/:trackerId', (req, res) => {
     const didTransition = !previousTargetId || previousTargetId !== targetStop.id;
     const nextTransitionAt = didTransition ? nowMs : lastTransitionAt;
     if (!didResync) {
-      if (progressionState !== PROGRESSION_STATE.OFF_ROUTE_RECOVERY || confidence >= 0.55) {
+      const nearTarget = Number.isFinite(distanceToTarget)
+        && distanceToTarget <= (ARRIVAL_RADIUS_METERS * 1.5);
+      const canExitRecovery = progressionState === PROGRESSION_STATE.OFF_ROUTE_RECOVERY
+        && !isReverseTravel
+        && mismatchCount <= RECOVERY_EXIT_MAX_MISMATCH
+        && (didTransition || dwell.confirmed || nearTarget);
+
+      if (
+        progressionState !== PROGRESSION_STATE.OFF_ROUTE_RECOVERY
+        || confidence >= RECOVERY_EXIT_CONFIDENCE
+        || canExitRecovery
+      ) {
         progressionState = dwell.confirmed
           ? PROGRESSION_STATE.DWELL_AT_STOP
           : PROGRESSION_STATE.EN_ROUTE;
