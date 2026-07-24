@@ -146,10 +146,12 @@ const PROJECTION_MAX_DISTANCE_METERS = 220; // beyond this, route projection is 
 const ARRIVAL_CONFIRMATION_SAMPLES = 2; // consecutive near+slow samples needed to confirm dwell arrival
 const MIN_DWELL_SECONDS = 6; // minimum near+slow dwell duration before promoting arrival transition
 const PASS_MARGIN_METERS = 35; // consider a stop passed once bus progress moves beyond this margin
+const PASS_DIVERGENCE_METERS = 90; // treat a stop as passed if distance to it is growing by this margin
 const MIN_PROGRESS_DELTA_FOR_REVERSE_METERS = 20; // ignore tiny progress fluctuations when inferring reverse motion
 const REVERSE_HEADING_DELTA_DEGREES = 120; // heading opposite route direction above this implies reverse travel
 const RECOVERY_EXIT_CONFIDENCE = 0.55; // preferred confidence threshold for leaving recovery mode
 const RECOVERY_EXIT_MAX_MISMATCH = 1; // allow recovery exit once mismatch stabilizes near zero
+const RECOVERY_MAX_HOLD_MS = 90000; // force recovery exit after stable hold to avoid sticky low-confidence state
 
 const SERVICE_STATE = Object.freeze({
   EN_ROUTE: 'en_route',
@@ -1431,6 +1433,9 @@ app.get('/api/eta/:trackerId', (req, res) => {
       const forwardStop = routeStops[nextIndex];
       const distanceToForward = calculateDistance(busLocation.lat, busLocation.lon, forwardStop.lat, forwardStop.lon);
       const isForwardClearlyCloser = distanceToForward + FORWARD_ADVANCE_MARGIN_METERS < distanceToLast;
+      const hasDistanceDiverged = Number.isFinite(lastState && lastState.lastDistanceToStop)
+        && Number.isFinite(distanceToLast)
+        && (distanceToLast > ((lastState.lastDistanceToStop || 0) + PASS_DIVERGENCE_METERS));
       const longEnoughSinceLastAdvance = nowMs - lastTransitionAt >= MIN_AUTO_ADVANCE_INTERVAL_MS;
  
       const currentStopS = routeProgress.stopSByStopId && Number.isFinite(routeProgress.stopSByStopId[lastNextStop.id])
@@ -1450,7 +1455,7 @@ app.get('/api/eta/:trackerId', (req, res) => {
         // We've arrived. Advance to the next stop in the sequence.
         targetStop = forwardStop;
       } else if (
-        speedKmh >= STOPPED_SPEED_KMH_THRESHOLD &&
+        (speedKmh >= STOPPED_SPEED_KMH_THRESHOLD || hasDistanceDiverged) &&
         longEnoughSinceLastAdvance &&
         isForwardClearlyCloser &&
         !isReverseTravel
@@ -1507,7 +1512,8 @@ app.get('/api/eta/:trackerId', (req, res) => {
       confidence = clamp((confidence * 0.7) + (routeProgress.projectionConfidence * 0.3), 0, 1);
     } else {
       // Avoid overconfidence when we cannot lock the bus to route geometry.
-      confidence = clamp(confidence - 0.12, 0, 0.75);
+      // Keep a moderate floor so sparse-route fallback can still leave recovery mode.
+      confidence = clamp(confidence - 0.03, 0.25, 0.75);
     }
 
     if (isReverseTravel) {
@@ -1553,10 +1559,14 @@ app.get('/api/eta/:trackerId', (req, res) => {
     if (!didResync) {
       const nearTarget = Number.isFinite(distanceToTarget)
         && distanceToTarget <= (ARRIVAL_RADIUS_METERS * 1.5);
+      const heldStableTooLong = progressionState === PROGRESSION_STATE.OFF_ROUTE_RECOVERY
+        && !isReverseTravel
+        && mismatchCount <= RECOVERY_EXIT_MAX_MISMATCH
+        && (nowMs - lastTransitionAt) >= RECOVERY_MAX_HOLD_MS;
       const canExitRecovery = progressionState === PROGRESSION_STATE.OFF_ROUTE_RECOVERY
         && !isReverseTravel
         && mismatchCount <= RECOVERY_EXIT_MAX_MISMATCH
-        && (didTransition || dwell.confirmed || nearTarget);
+        && (didTransition || dwell.confirmed || nearTarget || heldStableTooLong);
 
       if (
         progressionState !== PROGRESSION_STATE.OFF_ROUTE_RECOVERY
