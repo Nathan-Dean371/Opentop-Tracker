@@ -1388,216 +1388,79 @@ app.get('/api/eta/:trackerId', (req, res) => {
 
   // If no manual override, maintain a monotonic next-stop progression per bus.
   if (!nextStop) {
-    let targetStop = null;
     const nowMs = Date.now();
     const routeLoop = isRouteLoop(route, routeStops);
-
-    // Get the last known next stop state for this bus.
-    // Backward-compatible with previous string-only state format.
     const lastState = resolveLegacyProgressionState(busNextStopState[busId]);
-
-    const routeProgress = resolveRouteProgress(route, routeStops, busLocation, lastState, speedKmh);
     const nearestInfo = findNearestStop(routeStops, busLocation);
     const nearestImpliedNext = getImpliedNextFromNearest(routeStops, route, nearestInfo, speedKmh);
-    const routeImplied = getImpliedStopsFromRouteProgress(routeStops, route, routeProgress, lastState, speedKmh);
-    const impliedNext = routeImplied.impliedNextStop
-      ? { stop: routeImplied.impliedNextStop, index: routeImplied.impliedNextIndex, source: routeImplied.source }
-      : { stop: nearestImpliedNext.stop, index: nearestImpliedNext.index, source: 'nearest' };
 
-    const lastNextStopId = lastState && lastState.nextStopId;
-    const lastUpdatedAt = lastState ? lastState.updatedAt : 0;
-    const lastTransitionAt = lastState ? (lastState.lastTransitionAt || lastUpdatedAt || 0) : 0;
-    let mismatchCount = lastState ? (lastState.mismatchCount || 0) : 0;
-    let confidence = lastState ? (lastState.confidence || 0.5) : 0.5;
-    let progressionState = lastState ? (lastState.state || PROGRESSION_STATE.EN_ROUTE) : PROGRESSION_STATE.INITIALIZING;
-    let didResync = false;
-    const previousSamples = lastState ? lastState.lastSamples : [];
-    const headingInfo = getDerivedHeadingFromSamples(previousSamples, busLocation.lat, busLocation.lon);
-    const headingDelta = getAngularDifferenceDegrees(headingInfo.headingDeg, routeProgress.routeHeadingDeg);
-    const reverseByHeading = headingDelta != null && headingDelta >= REVERSE_HEADING_DELTA_DEGREES;
-    const reverseByProgress = Number.isFinite(routeProgress.busUnwrappedS)
-      && Number.isFinite(lastState && lastState.routeProgressS)
-      && Number.isFinite(routeProgress.totalLength)
-      && (() => {
-        const prevUnwrapped = ((lastState.lap || 0) * routeProgress.totalLength) + lastState.routeProgressS;
-        return prevUnwrapped - routeProgress.busUnwrappedS > MIN_PROGRESS_DELTA_FOR_REVERSE_METERS;
-      })();
-    const isReverseTravel = routeProgress.available && (reverseByHeading || reverseByProgress);
-    const lastNextStop = routeStops.find(s => s.id === lastNextStopId);
- 
+    let targetStop = null;
+    const lastNextStop = lastState && lastState.nextStopId
+      ? routeStops.find(s => s.id === lastState.nextStopId)
+      : null;
+
     if (lastNextStop) {
-      // If we have a valid last-known stop, check if we've arrived.
-      const distanceToLast = calculateDistance(busLocation.lat, busLocation.lon, lastNextStop.lat, lastNextStop.lon);
       const currentIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
       const nextIndex = getNextStopIndex(routeStops, currentIndex, route);
       const forwardStop = routeStops[nextIndex];
+      const distanceToCurrentTarget = calculateDistance(busLocation.lat, busLocation.lon, lastNextStop.lat, lastNextStop.lon);
       const distanceToForward = calculateDistance(busLocation.lat, busLocation.lon, forwardStop.lat, forwardStop.lon);
-      const isForwardClearlyCloser = distanceToForward + FORWARD_ADVANCE_MARGIN_METERS < distanceToLast;
-      const hasDistanceDiverged = Number.isFinite(lastState && lastState.lastDistanceToStop)
-        && Number.isFinite(distanceToLast)
-        && (distanceToLast > ((lastState.lastDistanceToStop || 0) + PASS_DIVERGENCE_METERS));
-      const longEnoughSinceLastAdvance = nowMs - lastTransitionAt >= MIN_AUTO_ADVANCE_INTERVAL_MS;
- 
-      const currentStopS = routeProgress.stopSByStopId && Number.isFinite(routeProgress.stopSByStopId[lastNextStop.id])
-        ? routeProgress.stopSByStopId[lastNextStop.id]
+      const lastDistanceToTarget = Number.isFinite(lastState.lastDistanceToStop)
+        ? lastState.lastDistanceToStop
         : null;
-      const nearestUnwrappedStopS = getNearestUnwrappedStopS(
-        currentStopS,
-        routeProgress.busUnwrappedS,
-        routeProgress.totalLength,
-        routeLoop
+      const lastTransitionAt = lastState.lastTransitionAt || lastState.updatedAt || 0;
+      const longEnoughSinceLastAdvance = nowMs - lastTransitionAt >= MIN_AUTO_ADVANCE_INTERVAL_MS;
+      const reachedCurrentTarget = distanceToCurrentTarget <= ARRIVAL_RADIUS_METERS;
+      const isForwardClearlyCloser = distanceToForward + FORWARD_ADVANCE_MARGIN_METERS < distanceToCurrentTarget;
+      const hasDistanceDiverged = Number.isFinite(lastDistanceToTarget)
+        && Number.isFinite(distanceToCurrentTarget)
+        && distanceToCurrentTarget > (lastDistanceToTarget + PASS_DIVERGENCE_METERS);
+
+      const shouldAdvanceToForward = longEnoughSinceLastAdvance && (
+        reachedCurrentTarget ||
+        (isForwardClearlyCloser && (speedKmh >= STOPPED_SPEED_KMH_THRESHOLD || hasDistanceDiverged))
       );
-      const hasPassEvidence = Number.isFinite(routeProgress.busUnwrappedS)
-        && Number.isFinite(nearestUnwrappedStopS)
-        && routeProgress.busUnwrappedS > (nearestUnwrappedStopS + PASS_MARGIN_METERS);
 
-      if (distanceToLast <= ARRIVAL_RADIUS_METERS) {
-        // We've arrived. Advance to the next stop in the sequence.
-        targetStop = forwardStop;
-      } else if (
-        (speedKmh >= STOPPED_SPEED_KMH_THRESHOLD || hasDistanceDiverged) &&
-        longEnoughSinceLastAdvance &&
-        isForwardClearlyCloser &&
-        !isReverseTravel
-      ) {
-        // If the forward stop is significantly closer (and enough time has passed),
-        // assume the tracked stop has been passed without stopping.
-        // This works as a projection-independent fallback for routes with wider stop spacing.
-        targetStop = forwardStop;
-      } else if (longEnoughSinceLastAdvance && hasPassEvidence && !isReverseTravel) {
-        // Polyline progress says we have already moved beyond the target stop.
-        targetStop = forwardStop;
-      } else {
-        // Still on the way to the last-known stop.
-        targetStop = lastNextStop;
-      }
+      targetStop = shouldAdvanceToForward ? forwardStop : lastNextStop;
 
-      const impliedIndex = impliedNext.index;
-      const lastIndex = routeStops.findIndex(s => s.id === lastNextStop.id);
-      const mismatchGap = getIndexGap(lastIndex, impliedIndex, routeLoop, routeStops.length);
-      if (Number.isFinite(mismatchGap) && mismatchGap >= MISMATCH_RESYNC_INDEX_GAP) {
-        mismatchCount += 1;
-        confidence = clamp(confidence - 0.12, 0, 1);
-      } else {
-        mismatchCount = Math.max(0, mismatchCount - 1);
-        confidence = clamp(confidence + 0.05, 0, 1);
-      }
-
-      const canResync = nowMs - lastTransitionAt >= MIN_RESYNC_INTERVAL_MS;
-      if (
-        canResync &&
-        impliedNext.stop &&
-        mismatchCount >= MISMATCH_RESYNC_SAMPLE_COUNT
-      ) {
-        targetStop = impliedNext.stop;
-        mismatchCount = 0;
-        confidence = clamp(confidence + 0.08, 0, 1);
-        progressionState = PROGRESSION_STATE.OFF_ROUTE_RECOVERY;
-        didResync = true;
+      if (targetStop.id === lastNextStop.id && nearestImpliedNext.stop) {
+        const nearestIndex = routeStops.findIndex(s => s.id === nearestImpliedNext.stop.id);
+        const forwardGap = getForwardIndexGap(currentIndex, nearestIndex, routeLoop, routeStops.length);
+        if (
+          Number.isFinite(nearestInfo.distance) &&
+          Number.isFinite(forwardGap) &&
+          forwardGap >= 2 &&
+          nearestInfo.distance + FORWARD_ADVANCE_MARGIN_METERS < distanceToCurrentTarget &&
+          longEnoughSinceLastAdvance
+        ) {
+          targetStop = nearestImpliedNext.stop;
+        }
       }
     } else {
-      // No state, so initialize from route-progress implication when available,
-      // otherwise use the geographically nearest stop.
-      const nearestStop = nearestInfo.stop;
-      const initializedFromRoute = routeImplied.impliedNextStop;
-
-      // If a nearest stop was found, use it. Otherwise, default to the first stop of the route.
-      // This prevents errors if all distance calculations failed.
-      targetStop = initializedFromRoute || nearestStop || routeStops[0];
-      mismatchCount = 0;
-      confidence = clamp(confidence + 0.08, 0, 1);
+      targetStop = nearestImpliedNext.stop || nearestInfo.stop || routeStops[0];
     }
 
-    if (routeProgress.available) {
-      confidence = clamp((confidence * 0.7) + (routeProgress.projectionConfidence * 0.3), 0, 1);
-    } else {
-      // Avoid overconfidence when we cannot lock the bus to route geometry.
-      // Keep a moderate floor so sparse-route fallback can still leave recovery mode.
-      confidence = clamp(confidence - 0.03, 0.25, 0.75);
-    }
-
-    if (isReverseTravel) {
-      confidence = clamp(confidence - 0.08, 0, 1);
-      if (progressionState !== PROGRESSION_STATE.OFF_ROUTE_RECOVERY) {
-        progressionState = PROGRESSION_STATE.OFF_ROUTE_RECOVERY;
-      }
-    }
- 
-    // Check for arrival at the *newly determined* target stop, in case the bus is sitting on top of it.
-    let distanceToTarget = calculateDistance(
+    const distanceToTarget = calculateDistance(
       busLocation.lat,
       busLocation.lon,
       targetStop.lat,
       targetStop.lon
     );
 
-    const preTransitionSample = {
-      t: nowMs,
-      lat: busLocation.lat,
-      lon: busLocation.lon,
-      speedKmh: Number.isFinite(speedKmh) ? Number(speedKmh.toFixed(2)) : 0,
-      selectedNextStopId: targetStop.id,
-      distanceToTarget: Number.isFinite(distanceToTarget) ? Number(distanceToTarget.toFixed(1)) : null
-    };
-    const dwell = getDwellConfirmation(previousSamples, preTransitionSample, targetStop.id);
-
-    if (distanceToTarget <= ARRIVAL_RADIUS_METERS && speedKmh < STOPPED_SPEED_KMH_THRESHOLD && dwell.confirmed) {
-      const currentIndex = routeStops.findIndex(s => s.id === targetStop.id);
-      const nextIndex = getNextStopIndex(routeStops, currentIndex, route);
-      targetStop = routeStops[nextIndex];
-      distanceToTarget = calculateDistance(
-        busLocation.lat,
-        busLocation.lon,
-        targetStop.lat,
-        targetStop.lon
-      );
-    }
-
-    const previousTargetId = lastNextStopId || null;
-    const didTransition = !previousTargetId || previousTargetId !== targetStop.id;
-    const nextTransitionAt = didTransition ? nowMs : lastTransitionAt;
-    if (!didResync) {
-      const nearTarget = Number.isFinite(distanceToTarget)
-        && distanceToTarget <= (ARRIVAL_RADIUS_METERS * 1.5);
-      const heldStableTooLong = progressionState === PROGRESSION_STATE.OFF_ROUTE_RECOVERY
-        && !isReverseTravel
-        && mismatchCount <= RECOVERY_EXIT_MAX_MISMATCH
-        && (nowMs - lastTransitionAt) >= RECOVERY_MAX_HOLD_MS;
-      const canExitRecovery = progressionState === PROGRESSION_STATE.OFF_ROUTE_RECOVERY
-        && !isReverseTravel
-        && mismatchCount <= RECOVERY_EXIT_MAX_MISMATCH
-        && (didTransition || dwell.confirmed || nearTarget || heldStableTooLong);
-
-      if (
-        progressionState !== PROGRESSION_STATE.OFF_ROUTE_RECOVERY
-        || confidence >= RECOVERY_EXIT_CONFIDENCE
-        || canExitRecovery
-      ) {
-        progressionState = dwell.confirmed
-          ? PROGRESSION_STATE.DWELL_AT_STOP
-          : PROGRESSION_STATE.EN_ROUTE;
-      }
-    }
+    const previousTargetId = lastState ? lastState.nextStopId : null;
+    const didTransition = previousTargetId !== targetStop.id;
+    const nextTransitionAt = didTransition
+      ? nowMs
+      : (lastState ? (lastState.lastTransitionAt || lastState.updatedAt || nowMs) : nowMs);
 
     const sample = {
       t: nowMs,
       lat: busLocation.lat,
       lon: busLocation.lon,
       speedKmh: Number.isFinite(speedKmh) ? Number(speedKmh.toFixed(2)) : 0,
-      headingDeg: Number.isFinite(headingInfo.headingDeg) ? Number(headingInfo.headingDeg.toFixed(1)) : null,
-      routeHeadingDeg: Number.isFinite(routeProgress.routeHeadingDeg) ? Number(routeProgress.routeHeadingDeg.toFixed(1)) : null,
-      reverseTravel: isReverseTravel,
-      impliedNextStopId: impliedNext.stop ? impliedNext.stop.id : null,
-      impliedBy: impliedNext.source,
       selectedNextStopId: targetStop.id,
       distanceToTarget: Number.isFinite(distanceToTarget) ? Number(distanceToTarget.toFixed(1)) : null,
-      dwellConsecutiveSamples: dwell.consecutive,
-      dwellSeconds: Number(dwell.dwellSeconds.toFixed(1)),
-      routeProgressS: Number.isFinite(routeImplied.routeProgressS) ? Number(routeImplied.routeProgressS.toFixed(1)) : null,
-      lap: Number.isFinite(routeImplied.lap) ? routeImplied.lap : 0,
-      distanceToRoute: Number.isFinite(routeImplied.projectionDistance) ? Number(routeImplied.projectionDistance.toFixed(1)) : null,
-      mismatchCount,
-      confidence: Number(confidence.toFixed(3))
+      mode: 'simple_sequential'
     };
 
     busNextStopState[busId] = {
@@ -1605,14 +1468,15 @@ app.get('/api/eta/:trackerId', (req, res) => {
       lastDistanceToStop: Math.round(distanceToTarget),
       updatedAt: nowMs,
       lastTransitionAt: nextTransitionAt,
-      mismatchCount,
-      confidence: Number(confidence.toFixed(3)),
-      state: progressionState,
-      routeProgressS: Number.isFinite(routeImplied.routeProgressS) ? Number(routeImplied.routeProgressS.toFixed(1)) : null,
-      lap: Number.isFinite(routeImplied.lap) ? routeImplied.lap : (lastState ? (lastState.lap || 0) : 0),
-      lastStopId: routeImplied.impliedLastStop ? routeImplied.impliedLastStop.id : currentStopFromNext(routeStops, targetStop.id, route),
+      mismatchCount: 0,
+      confidence: 0.9,
+      state: PROGRESSION_STATE.EN_ROUTE,
+      routeProgressS: null,
+      lap: lastState ? (lastState.lap || 0) : 0,
+      lastStopId: currentStopFromNext(routeStops, targetStop.id, route),
       lastSamples: pushProgressionSample(lastState ? lastState.lastSamples : [], sample)
     };
+
     nextStop = targetStop;
   }
 
@@ -1808,6 +1672,14 @@ function getIndexGap(indexA, indexB, loop, length) {
   const direct = Math.abs(indexA - indexB);
   if (!loop) return direct;
   return Math.min(direct, length - direct);
+}
+
+function getForwardIndexGap(fromIndex, toIndex, loop, length) {
+  if (fromIndex < 0 || toIndex < 0 || length <= 0) return Infinity;
+  if (loop) {
+    return (toIndex - fromIndex + length) % length;
+  }
+  return toIndex >= fromIndex ? (toIndex - fromIndex) : Infinity;
 }
 
 function pushProgressionSample(lastSamples, sample) {
