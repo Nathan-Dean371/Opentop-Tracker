@@ -48,16 +48,20 @@ npm start
 
 ### Migration Mode (HTTP + MQTT)
 
-The server now supports dual ingestion:
+The server supports dual ingestion:
 
-- HTTP webhook via `/owntracks` (existing behavior)
+- HTTP webhook via `/owntracks` (opt-in; controlled by `OWNTRACKS_HTTP_ENABLED`)
 - MQTT subscription (optional, enabled when `MQTT_BROKER_URL` is set)
 
 Recommended rollout:
 
-1. Keep HTTP enabled while rolling out OwnTracks remote config.
+1. Set `OWNTRACKS_HTTP_ENABLED=true` while rolling out OwnTracks remote config.
 2. Enable MQTT on the backend and verify devices are flowing through MQTT.
-3. Disable HTTP ingestion only after all devices are migrated.
+3. Set `OWNTRACKS_HTTP_ENABLED=false` after all devices are migrated. This is the default; disabled HTTP routes return 404.
+
+### OwnTracks HTTP Environment Variable
+
+- `OWNTRACKS_HTTP_ENABLED` (default: `false`; set to `true` only when HTTP ingestion is required)
 
 ### MQTT Environment Variables
 
@@ -70,9 +74,10 @@ Recommended rollout:
 - `MQTT_RECONNECT_PERIOD_MS` (default: `5000`)
 - `MQTT_CONNECT_TIMEOUT_MS` (default: `30000`)
 - `MQTT_CLEAN_SESSION` (default: `false`; keeps broker session/subscription state)
-- `MQTT_TLS_REJECT_UNAUTHORIZED` (default: `false`; set `true` in production with trusted certs)
+- `MQTT_TLS_REJECT_UNAUTHORIZED` (default: `true`; verifies the broker certificate. Set `false` only for local testing)
+- `MQTT_CA_CERT` (optional; required when the broker uses a private/self-managed CA. PEM contents of `ca.crt` (never the private key) or a file path. The broker certificate's SAN must match the host in `MQTT_BROKER_URL`)
 
-If `MQTT_BROKER_URL` is not set, the app runs in HTTP-only mode.
+If `MQTT_BROKER_URL` is not set, MQTT ingestion is disabled. To use HTTP-only mode, set `OWNTRACKS_HTTP_ENABLED=true`.
 
 ### Setup OwnTracks App
 
@@ -112,6 +117,8 @@ The application expects OwnTracks location data in JSON format:
 
 #### POST `/owntracks`
 Receives location updates from OwnTracks devices.
+
+This endpoint is disabled by default and returns 404 unless `OWNTRACKS_HTTP_ENABLED=true`.
 
 **Request Body**: OwnTracks location JSON
 

@@ -14,15 +14,15 @@
 
 ### Medium — Unauthenticated OwnTracks location ingestion
 
-The public `POST /owntracks` endpoint in [`server.js`](./server.js) passes submitted payloads directly to location ingestion without authenticating the sender (lines 540–556). A caller can submit coordinates for a tracker's `tid`, potentially forging its displayed location and ETA.
+When `OWNTRACKS_HTTP_ENABLED=true`, the `POST /owntracks` endpoint in [`server.js`](./server.js) accepts submissions without authenticating the sender. A caller can submit coordinates for a tracker's `tid`, potentially forging its displayed location and ETA. HTTP ingestion is disabled by default; the risk applies whenever the endpoint is enabled.
 
-**Recommendation:** Authenticate webhook submissions or restrict the endpoint to a trusted, authenticated source.
+**Recommendation:** Leave HTTP ingestion disabled when devices use MQTT. If HTTP ingestion is needed, authenticate webhook submissions or restrict the endpoint to a trusted, authenticated source.
 
-### Medium — MQTT TLS certificate verification disabled by default
+### Medium — MQTT TLS certificate verification disabled by default (addressed)
 
-[`server.js`](./server.js) defaults `MQTT_TLS_REJECT_UNAUTHORIZED` to `false` (line 99), and passes that value to the MQTT client (lines 453–471). If MQTT over TLS is configured, this permits connections without validating the broker certificate, enabling an active network attacker to impersonate the broker, capture credentials, or inject location messages. The README also documents this insecure default.
+Previously, [`server.js`](./server.js) defaulted `MQTT_TLS_REJECT_UNAUTHORIZED` to `false`, which permitted connections without validating the broker certificate and enabled an active network attacker to impersonate the broker, capture credentials, or inject location messages.
 
-**Recommendation:** Enable certificate verification by default and configure trusted certificates for private CAs as needed.
+**Resolution:** Verification is now on by default, and `MQTT_CA_CERT` lets the backend trust a private CA. Deployments using a self-managed CA must set `MQTT_CA_CERT` (public `ca.crt` only) before upgrading, otherwise the broker connection will be rejected. A warning is logged if verification is explicitly disabled.
 
 ## Public-release notes
 

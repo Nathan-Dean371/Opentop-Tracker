@@ -20,8 +20,8 @@ app.use((req, res, next) => {
 });
 
 // Admin credentials from environment variables (with defaults for local dev)
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'opentop123';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 // Simple Basic Auth middleware for admin panel
 function basicAuth(req, res, next) {
@@ -80,6 +80,8 @@ const LOCATION_MAX_OUT_OF_ORDER_SECONDS = Number.isFinite(parseInt(process.env.L
   ? parseInt(process.env.LOCATION_MAX_OUT_OF_ORDER_SECONDS, 10)
   : 30;
 
+const OWNTRACKS_HTTP_ENABLED = String(process.env.OWNTRACKS_HTTP_ENABLED || 'false').trim().toLowerCase() === 'true';
+
 // MQTT ingestion (optional, enabled when MQTT_BROKER_URL is set)
 const MQTT_BROKER_URL = (process.env.MQTT_BROKER_URL || '').trim();
 const MQTT_TOPIC = (process.env.MQTT_TOPIC || 'owntracks/+/+').trim();
@@ -96,7 +98,27 @@ const MQTT_CONNECT_TIMEOUT_MS = Number.isFinite(parseInt(process.env.MQTT_CONNEC
   ? parseInt(process.env.MQTT_CONNECT_TIMEOUT_MS, 10)
   : 30000;
 const MQTT_CLEAN_SESSION = String(process.env.MQTT_CLEAN_SESSION || 'false').toLowerCase() === 'true';
-const MQTT_TLS_REJECT_UNAUTHORIZED = String(process.env.MQTT_TLS_REJECT_UNAUTHORIZED || 'false').toLowerCase() === 'true';
+// Certificate verification is on unless explicitly set to 'false'
+const MQTT_TLS_REJECT_UNAUTHORIZED = String(process.env.MQTT_TLS_REJECT_UNAUTHORIZED || 'true').trim().toLowerCase() !== 'false';
+// Optional CA for private/self-managed brokers: PEM contents (\n escapes allowed) or a file path
+const MQTT_CA_CERT = (process.env.MQTT_CA_CERT || '').trim();
+
+function loadMqttCa() {
+  if (!MQTT_CA_CERT) {
+    return undefined;
+  }
+
+  if (MQTT_CA_CERT.includes('BEGIN CERTIFICATE')) {
+    return MQTT_CA_CERT.replace(/\\n/g, '\n');
+  }
+
+  try {
+    return fs.readFileSync(MQTT_CA_CERT);
+  } catch (error) {
+    console.error(`⚠️ Could not read MQTT_CA_CERT file: ${error.message}`);
+    return undefined;
+  }
+}
 
 let mqttClient = null;
 const mqttState = {
@@ -460,6 +482,15 @@ function setupMqttIngestion() {
     rejectUnauthorized: MQTT_TLS_REJECT_UNAUTHORIZED
   };
 
+  const mqttCa = loadMqttCa();
+  if (mqttCa) {
+    options.ca = mqttCa;
+  }
+
+  if (!MQTT_TLS_REJECT_UNAUTHORIZED) {
+    console.warn('⚠️ MQTT TLS certificate verification is DISABLED (MQTT_TLS_REJECT_UNAUTHORIZED=false)');
+  }
+
   if (MQTT_USERNAME) {
     options.username = MQTT_USERNAME;
   }
@@ -533,11 +564,18 @@ function setupMqttIngestion() {
 }
 
 // OwnTracks webhook endpoint
-app.get(['/owntracks', '/owntracks/'], (req, res) => {
+function requireOwnTracksHttpEnabled(req, res, next) {
+  if (!OWNTRACKS_HTTP_ENABLED) {
+    return res.sendStatus(404);
+  }
+  next();
+}
+
+app.get(['/owntracks', '/owntracks/'], requireOwnTracksHttpEnabled, (req, res) => {
   res.status(200).json({ success: true, message: 'OwnTracks endpoint ready. Send POST with JSON body.' });
 });
 
-app.post(['/owntracks', '/owntracks/'], (req, res) => {
+app.post(['/owntracks', '/owntracks/'], requireOwnTracksHttpEnabled, (req, res) => {
   let data = req.body;
 
   if (typeof data === 'string') {
@@ -2511,7 +2549,7 @@ app.get('/health', (req, res) => {
     routes: routes.length,
     ingestion: {
       http: {
-        enabled: true
+        enabled: OWNTRACKS_HTTP_ENABLED
       },
       mqtt: {
         enabled: mqttState.enabled,
@@ -2537,6 +2575,7 @@ setupMqttIngestion();
 
 app.listen(PORT, () => {
   console.log(`OpenTop Tracker server running on port ${PORT}`);
+  console.log(`OwnTracks HTTP ingestion ${OWNTRACKS_HTTP_ENABLED ? 'enabled' : 'disabled'}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
 });
 

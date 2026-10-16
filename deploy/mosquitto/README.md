@@ -108,13 +108,14 @@ Set these on the Node service:
 - MQTT_RECONNECT_PERIOD_MS=5000
 - MQTT_CONNECT_TIMEOUT_MS=30000
 - MQTT_CLEAN_SESSION=false
-- MQTT_TLS_REJECT_UNAUTHORIZED=false (set true when using trusted cert chains)
+- MQTT_TLS_REJECT_UNAUTHORIZED=true (default; verifies the broker certificate)
+- MQTT_CA_CERT=<contents of ca.crt> (required for Option B self-managed CA; never include ca.key or server.key)
 
-When MQTT_BROKER_URL is empty, app stays in HTTP-only mode.
+When MQTT_BROKER_URL is empty, MQTT ingestion is disabled. HTTP ingestion is controlled separately by `OWNTRACKS_HTTP_ENABLED` and is disabled by default.
 
 ## Rollout Guidance
 
-Keep HTTP /owntracks enabled while moving devices to MQTT.
+Set `OWNTRACKS_HTTP_ENABLED=true` while moving devices to MQTT. After confirming all devices publish successfully through MQTT, set it to `false` and restart the app; the `/owntracks` routes will return 404 without ingesting updates.
 Use migration telemetry endpoints to confirm source:
 
 - /api/trackers
